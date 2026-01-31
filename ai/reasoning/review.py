@@ -1,24 +1,45 @@
 import json
 import sys
+from pathlib import Path
+import yaml
+
+from ai.reasoning.llm_enrichment import enrich_with_llm
 
 
-def assess_risk(ctx: dict):
-    caps = ctx["capabilities_detected"]
-    summary = ctx["summary"]
+# -------------------------------------------------
+# Config Loader
+# -------------------------------------------------
+
+def load_repo_config():
+    cfg = Path(".ai-reviewer.yaml")
+    if not cfg.exists():
+        return {"environment": "dev"}
+
+    with open(cfg) as f:
+        return yaml.safe_load(f)
+
+
+# -------------------------------------------------
+# Core Risk Engine (DETERMINISTIC)
+# -------------------------------------------------
+
+def assess_risk(ctx: dict) -> dict:
+    caps = ctx.get("capabilities_detected", {})
+    summary = ctx.get("summary", {})
+
+    is_create_only = (
+        summary.get("create", 0) > 0 and
+        summary.get("update", 0) == 0 and
+        summary.get("delete", 0) == 0
+    )
 
     reasons = []
     recommendations = []
     confidence = 0.6
 
-    is_create_only = (
-        summary["create"] > 0 and
-        summary["update"] == 0 and
-        summary["delete"] == 0
-    )
-
-    # -------------------------------
-    # 🔴 DATA PLANE + PUBLIC EXPOSURE
-    # -------------------------------
+    # -------------------------------------------------
+    # 🔴 HARD BLOCK — Public Data Plane
+    # -------------------------------------------------
     if caps.get("data_plane") and caps.get("public_exposure"):
         return {
             "risk_level": "HIGH",
@@ -35,10 +56,13 @@ def assess_risk(ctx: dict):
             ]
         }
 
-    # --------------------------------
-    # 🟠 ACTIVE INFRA (COMPUTE / CONTROL)
-    # --------------------------------
-    if is_create_only and (caps.get("compute_plane") or caps.get("control_plane")):
+    # -------------------------------------------------
+    # 🟠 WARN — Active Infra (Compute / Control)
+    # -------------------------------------------------
+    if is_create_only and (
+        caps.get("compute_plane") or
+        caps.get("control_plane")
+    ):
         return {
             "risk_level": "MEDIUM",
             "decision": "WARN",
@@ -47,14 +71,14 @@ def assess_risk(ctx: dict):
                 "Active infrastructure introduced requiring human review"
             ],
             "recommendations": [
-                "Ensure hardening standards are followed",
-                "Confirm this is intended for the environment"
+                "Ensure security hardening standards are followed",
+                "Confirm this change is intended for the environment"
             ]
         }
 
-    # --------------------------------
-    # 🟢 SCAFFOLD / NETWORK ONLY
-    # --------------------------------
+    # -------------------------------------------------
+    # 🟢 PASS — Scaffold / Network Only
+    # -------------------------------------------------
     return {
         "risk_level": "LOW",
         "decision": "PASS",
@@ -68,11 +92,25 @@ def assess_risk(ctx: dict):
     }
 
 
-def main(input_file, output_file):
+# -------------------------------------------------
+# Entry Point
+# -------------------------------------------------
+
+def main(input_file: str, output_file: str):
     with open(input_file) as f:
         ctx = json.load(f)
 
+    config = load_repo_config()
+    env = config.get("environment", "dev")
+
     review = assess_risk(ctx)
+    review["environment"] = env
+
+    # -------------------------------------------------
+    # 🤖 OPTION 1 — LLM ONLY EXPLAINS (NOT DECIDES)
+    # -------------------------------------------------
+    if review["decision"] != "BLOCK":
+        review = enrich_with_llm(ctx, review)
 
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
@@ -81,4 +119,8 @@ def main(input_file, output_file):
 
 
 if __name__ == "__main__":
+    if len(sys.argv) != 3:
+        print("Usage: python review.py <enriched_context.json> <ai_review.json>")
+        sys.exit(1)
+
     main(sys.argv[1], sys.argv[2])
