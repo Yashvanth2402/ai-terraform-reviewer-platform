@@ -43,3 +43,16 @@ def load_security_severity() -> dict:
     """
     with open(BASE_PATH / "security_severity.json", "r") as f:
         return json.load(f)
+
+
+# -------------------------------------------------
+# Blocking Rules Definitions
+# -------------------------------------------------
+
+def load_blocking_rules() -> dict:
+    """
+    Loads blocking rules from the policies directory.
+    These rules define which risk patterns should block deployments.
+    """
+    with open(BASE_PATH / "../policies/blocking_rules.json", "r") as f:
+        return json.load(f)
