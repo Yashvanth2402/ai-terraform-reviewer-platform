@@ -28,10 +28,6 @@ def score_to_level(score: float) -> str:
 
 
 def load_repo_policy_config():
-    """
-    Loads repo-level AI reviewer configuration.
-    This file lives in the CONSUMER Terraform repo.
-    """
     config_path = Path(".ai-reviewer.yaml")
     if not config_path.exists():
         return {
@@ -76,7 +72,7 @@ def assess_risk(enriched_context: dict) -> dict:
     pattern_counts = Counter(all_patterns)
 
     # -------------------------------------------------
-    # 3. Base risk scoring
+    # 3. Base risk scoring (LOWER unknown_service impact)
     # -------------------------------------------------
     risk_score = 0.0
     reasons = []
@@ -87,13 +83,19 @@ def assess_risk(enriched_context: dict) -> dict:
         if not info:
             continue
 
-        risk_score += info["base_score"] * count
+        base = info["base_score"]
+
+        # Unknown service should NOT inflate risk heavily
+        if pattern == "unknown_service":
+            base = 0.2
+
+        risk_score += base * count
         reasons.append(
             f"{pattern} detected ({count}×): {info['description']}"
         )
 
     # -------------------------------------------------
-    # 4. Risk reducers (good engineering signals)
+    # 4. Risk reducers (GOOD engineering signals)
     # -------------------------------------------------
     if summary.get("update", 0) == 0 and summary.get("delete", 0) == 0:
         risk_score -= 2
@@ -112,11 +114,11 @@ def assess_risk(enriched_context: dict) -> dict:
         praise.append("Security hardening change detected")
 
     # -------------------------------------------------
-    # 5. Intent escalation
+    # 5. Intent escalation (REAL destructive intent only)
     # -------------------------------------------------
-    if intent == "risky_change":
+    if intent == "risky_change" and summary.get("delete", 0) > 0:
         risk_score += 2
-        reasons.append("High-impact or destructive intent detected")
+        reasons.append("Destructive infrastructure change detected")
 
     # -------------------------------------------------
     # 6. Environment weighting
@@ -127,7 +129,7 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score *= 0.7
 
     # -------------------------------------------------
-    # 7. Security Severity Engine
+    # 7. Security severity engine
     # -------------------------------------------------
     security_findings = []
 
@@ -138,7 +140,7 @@ def assess_risk(enriched_context: dict) -> dict:
 
         severity = sec["severity"]
 
-        # Environment-aware downgrade
+        # Dev downgrade
         if env == "dev" and severity == "HIGH":
             severity = "MEDIUM"
 
@@ -148,7 +150,6 @@ def assess_risk(enriched_context: dict) -> dict:
             "description": sec["description"]
         })
 
-    # Security-based escalation
     if any(f["severity"] == "CRITICAL" for f in security_findings):
         risk_score += 4
         reasons.append("Critical security exposure detected")
@@ -158,9 +159,9 @@ def assess_risk(enriched_context: dict) -> dict:
         reasons.append("High security exposure in production")
 
     # -------------------------------------------------
-    # 8. Policy pack enforcement
+    # 8. Policy evaluation (POLICY ≠ VIOLATION)
     # -------------------------------------------------
-    policy_violations = []
+    raw_policy_hits = []
 
     for policy_name in enabled_policies:
         policy = policy_packs.get(policy_name)
@@ -169,11 +170,29 @@ def assess_risk(enriched_context: dict) -> dict:
 
         for pattern in policy["patterns"]:
             if pattern in pattern_counts:
-                policy_violations.append({
+                raw_policy_hits.append({
                     "policy": policy_name,
                     "pattern": pattern,
                     "description": policy["description"]
                 })
+
+    # Context-aware filtering (THIS FIXES YOUR ISSUE)
+    policy_violations = []
+
+    for v in raw_policy_hits:
+        # Create-only networking is allowed
+        if (
+            v["pattern"] == "network_boundary"
+            and summary.get("update", 0) == 0
+            and summary.get("delete", 0) == 0
+        ):
+            continue
+
+        # Security tightening is allowed
+        if v["pattern"] == "identity_boundary" and intent == "security_hardening":
+            continue
+
+        policy_violations.append(v)
 
     if policy_violations:
         risk_score += len(policy_violations)
@@ -182,28 +201,28 @@ def assess_risk(enriched_context: dict) -> dict:
         )
 
     # -------------------------------------------------
-    # 9. Historical context
+    # 9. Historical context (light influence)
     # -------------------------------------------------
     resource_types = [r["type"] for r in resources]
     history = find_similar_prs(resource_types, env)
 
-    if history:
+    if history and risk_score >= 4:
         risk_score += 1
         reasons.append(
-            f"Historical context: {len(history)} similar change(s) observed previously"
+            f"Historical context: {len(history)} similar risky change(s) observed"
         )
 
     # -------------------------------------------------
     # 10. Final risk & confidence
     # -------------------------------------------------
     risk_level = score_to_level(risk_score)
-    confidence = min(0.95, max(0.45, 0.5 + (risk_score / 10)))
+    confidence = min(0.95, max(0.45, 0.55 + (risk_score / 12)))
 
     # -------------------------------------------------
-    # 11. PR Decision Engine (DAY 8)
+    # 11. PR Decision Engine (PASS / WARN / BLOCK)
     # -------------------------------------------------
     decision = "PASS"
-    decision_reason = "No blocking conditions met"
+    decision_reason = "Safe infrastructure change"
 
     if any(f["severity"] == "CRITICAL" for f in security_findings):
         decision = "BLOCK"
@@ -211,7 +230,7 @@ def assess_risk(enriched_context: dict) -> dict:
 
     elif env == "prod" and risk_level == "HIGH":
         decision = "BLOCK"
-        decision_reason = "High-risk infrastructure change in production"
+        decision_reason = "High-risk change in production"
 
     elif policy_violations:
         decision = "WARN"
@@ -219,7 +238,7 @@ def assess_risk(enriched_context: dict) -> dict:
 
     elif risk_level == "MEDIUM":
         decision = "WARN"
-        decision_reason = "Medium-risk infrastructure change"
+        decision_reason = "Moderate infrastructure risk"
 
     # -------------------------------------------------
     # 12. Recommendations
@@ -276,7 +295,7 @@ def main(input_file: str, output_file: str):
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
 
-    print("SUCCESS: Production-grade AI Terraform review generated")
+    print("SUCCESS: Context-aware AI Terraform review generated")
     print(json.dumps(review, indent=2))
 
 
