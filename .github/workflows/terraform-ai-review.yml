@@ -1,72 +1,76 @@
-terraform {
-  required_providers {
-    azurerm = {
-      source  = "hashicorp/azurerm"
-      version = "~> 3.0"
-    }
-  }
-}
+name: Terraform AI Review Platform
 
-provider "azurerm" {
-  features {}
-}
+on:
+  workflow_call:
+    inputs:
+      terraform_path:
+        description: "Path to Terraform code"
+        required: true
+        type: string
+      environment:
+        description: "Environment name (dev/stage/prod)"
+        required: true
+        type: string
+    secrets:
+      AZURE_OPENAI_KEY:
+        required: true
+      AZURE_OPENAI_ENDPOINT:
+        required: true
+      AZURE_OPENAI_DEPLOYMENT:
+        required: true
 
-resource "azurerm_resource_group" "rg" {
-  name     = "rg-vm-dev"
-  location = var.location
-}
+permissions:
+  contents: read
+  pull-requests: write
 
-resource "azurerm_virtual_network" "vnet" {
-  name                = "vnet-dev"
-  address_space       = ["10.1.0.0/16"]
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
-}
+jobs:
+  ai-terraform-review:
+    runs-on: ubuntu-latest
 
-resource "azurerm_subnet" "subnet" {
-  name                 = "vm-subnet"
-  resource_group_name  = azurerm_resource_group.rg.name
-  virtual_network_name = azurerm_virtual_network.vnet.name
-  address_prefixes     = ["10.1.1.0/24"]
-}
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
 
-resource "azurerm_network_interface" "nic" {
-  name                = "vm-nic"
-  location            = azurerm_resource_group.rg.location
-  resource_group_name = azurerm_resource_group.rg.name
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
 
-  ip_configuration {
-    name                          = "internal"
-    subnet_id                     = azurerm_subnet.subnet.id
-    private_ip_address_allocation = "Dynamic"
-  }
-}
+      - name: Install dependencies
+        run: |
+          pip install -r ./requirements.txt
 
-resource "azurerm_linux_virtual_machine" "vm" {
-  name                = "example-vm"
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = azurerm_resource_group.rg.location
-  size                = var.vm_size
-  admin_username      = "azureuser"
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
 
-  network_interface_ids = [
-    azurerm_network_interface.nic.id
-  ]
+      - name: Terraform Init
+        working-directory: ${{ inputs.terraform_path }}
+        run: terraform init -input=false
 
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
-  }
+      - name: Terraform Plan
+        working-directory: ${{ inputs.terraform_path }}
+        run: terraform plan -out=tfplan -input=false
 
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "0001-com-ubuntu-server-focal"
-    sku       = "20_04-lts"
-    version   = "latest"
-  }
+      - name: Convert Plan to JSON
+        working-directory: ${{ inputs.terraform_path }}
+        run: terraform show -json tfplan > tfplan.json
 
-  admin_ssh_key {
-    username   = "azureuser"
-    public_key = var.ssh_public_key
-  }
-}
+      - name: Enrich Terraform Context
+        run: |
+          python ./ai/context/enrich.py \
+          ${{ inputs.terraform_path }}/tfplan.json \
+          enriched_context.json
+
+      - name: Run AI Review
+        env:
+          AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python ./ai/reasoning/review.py \
+          enriched_context.json \
+          ai_review.json
+
+          python ./ai/reasoning/post_comment.py
