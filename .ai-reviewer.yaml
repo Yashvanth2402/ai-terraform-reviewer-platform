@@ -1,6 +1,0 @@
-environment: dev
-
-enabled_policies:
-  - network_policy
-  - identity_policy
-  - security_baseline
