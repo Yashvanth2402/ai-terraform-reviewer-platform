@@ -1,0 +1,33 @@
+{
+  "azurerm_resource_group": ["blast_radius"],
+
+  "azurerm_virtual_network": [
+    "network_boundary",
+    "blast_radius"
+  ],
+
+  "azurerm_subnet": [
+    "network_boundary"
+  ],
+
+  "azurerm_network_security_group": [
+    "network_boundary",
+    "identity_boundary"
+  ],
+
+  "azurerm_linux_virtual_machine": [
+    "availability_risk",
+    "blast_radius"
+  ],
+
+  "azurerm_storage_account": [
+    "data_at_rest",
+    "public_exposure"
+  ],
+
+  "azurerm_kubernetes_cluster": [
+    "network_boundary",
+    "identity_boundary",
+    "blast_radius"
+  ]
+}
