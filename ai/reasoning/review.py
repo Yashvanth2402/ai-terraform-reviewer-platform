@@ -2,6 +2,7 @@ import json
 import sys
 from collections import Counter
 
+from ai.knowledge.knowledge_loader import load_risk_patterns
 from ai.reasoning.llm_enrichment import enrich_with_llm
 from ai.memory.memory_store import find_similar_prs
 
@@ -10,195 +11,156 @@ from ai.memory.memory_store import find_similar_prs
 # Helper functions
 # -------------------------------------------------
 
-def has_resource(resources, rtype):
-    return any(r["type"] == rtype for r in resources)
-
-
-def count_resources(resources, rtype):
-    return sum(1 for r in resources if r["type"] == rtype)
-
-
-def only_creates(summary):
-    return summary.get("update", 0) == 0 and summary.get("delete", 0) == 0
+def score_to_level(score: float) -> str:
+    if score >= 7:
+        return "HIGH"
+    if score >= 4:
+        return "MEDIUM"
+    return "LOW"
 
 
 # -------------------------------------------------
-# Core Risk Engine
+# Core Pattern Scoring Engine
 # -------------------------------------------------
 
 def assess_risk(enriched_context: dict) -> dict:
-    env = enriched_context.get("environment", "unknown")
+    env = enriched_context.get("environment", "dev")
     resources = enriched_context.get("resources", [])
     summary = enriched_context.get("summary", {})
 
-    resource_types = [r["type"] for r in resources]
-    type_counts = Counter(resource_types)
+    risk_patterns = load_risk_patterns()
 
-    risk = "LOW"
-    confidence = 0.3
+    # -------------------------------------------------
+    # 1. Collect patterns
+    # -------------------------------------------------
+    pattern_list = []
+    for r in resources:
+        pattern_list.extend(r.get("patterns", []))
+
+    pattern_counts = Counter(pattern_list)
+
+    # -------------------------------------------------
+    # 2. Base risk score from patterns
+    # -------------------------------------------------
+    risk_score = 0
     reasons = []
-    comments = []
-    recommendations = []
 
-    # =================================================
-    # 🔥 HARD DANGER (ALWAYS HIGH)
-    # =================================================
+    for pattern, count in pattern_counts.items():
+        pattern_info = risk_patterns.get(pattern)
+        if not pattern_info:
+            continue
 
-    if has_resource(resources, "azurerm_public_ip"):
-        risk = "HIGH"
-        confidence = 0.9
-        reasons.append("Public IP resource detected, increasing exposure risk.")
-        comments.append("🚨 Public IP detected. Ensure this is strictly required and protected.")
-        recommendations.append("Avoid public IPs unless absolutely necessary. Prefer private endpoints.")
+        contribution = pattern_info["base_score"] * count
+        risk_score += contribution
 
-    if has_resource(resources, "azurerm_network_security_group"):
-        for r in resources:
-            if r["type"] == "azurerm_network_security_group":
-                for rule in r.get("security_rules", []):
-                    if rule.get("source_address_prefix") == "*" and rule.get("destination_port_range") == "22":
-                        reasons.append("SSH (22) is open to all sources.")
-                        comments.append("⚠️ SSH open to the internet. Restrict source IPs.")
-                        recommendations.append("Limit SSH access to corporate IP ranges or use Bastion.")
+        reasons.append(
+            f"{pattern} detected ({count}×): {pattern_info['description']}"
+        )
 
-    # =================================================
-    # 🌐 NETWORKING (CONTEXT-AWARE)
-    # =================================================
+    # -------------------------------------------------
+    # 3. Contextual reducers (GOOD PR SIGNALS)
+    # -------------------------------------------------
+    reducers = []
 
-    network_resources = {
-        "azurerm_virtual_network",
-        "azurerm_subnet",
-        "azurerm_route_table",
-        "azurerm_nat_gateway"
-    }
+    create_only = summary.get("update", 0) == 0 and summary.get("delete", 0) == 0
+    if create_only:
+        risk_score -= 2
+        reducers.append("Create-only change (no destructive actions)")
 
-    network_changes = any(t in network_resources for t in resource_types)
+    no_public_exposure = "public_exposure" not in pattern_counts
+    if no_public_exposure:
+        risk_score -= 2
+        reducers.append("No public exposure detected")
 
-    if network_changes:
-        reasons.append("Azure networking resources are being modified.")
+    # VM disabled / CI-safe pattern
+    vm_disabled = any(
+        r["type"] == "azurerm_linux_virtual_machine" and r.get("action") == "create"
+        for r in resources
+    )
+    if vm_disabled:
+        risk_score -= 1
+        reducers.append("Compute resources gated or CI-safe")
 
-        if not only_creates(summary):
-            risk = "HIGH"
-            confidence = max(confidence, 0.85)
-            comments.append("🚨 Network modification detected (update/delete). Rollback can be complex.")
-            recommendations.append("Validate routing, CIDR overlaps, and rollback strategy.")
-        else:
-            risk = max(risk, "MEDIUM", key=["LOW", "MEDIUM", "HIGH"].index)
-            confidence = max(confidence, 0.6)
-            comments.append("⚠️ New networking components added. Review CIDR and dependencies.")
+    # -------------------------------------------------
+    # 4. Environment weighting
+    # -------------------------------------------------
+    if env == "prod":
+        risk_score *= 1.3
+    elif env == "dev":
+        risk_score *= 0.7
 
-    # =================================================
-    # 🖥️ COMPUTE (SAFE VS UNSAFE)
-    # =================================================
-
-    if has_resource(resources, "azurerm_linux_virtual_machine"):
-        if env == "prod":
-            risk = "HIGH"
-            confidence = max(confidence, 0.85)
-            reasons.append("Compute resources introduced in production.")
-            comments.append("🚨 VM changes in production detected.")
-            recommendations.append("Use phased rollout or blue-green strategy.")
-        else:
-            reasons.append("VM resources introduced in non-production.")
-            comments.append("ℹ️ VM changes in non-prod environment.")
-
-    # =================================================
-    # 🧱 SAFE PATTERNS (RISK REDUCERS)
-    # =================================================
-
-    safe_signals = []
-
-    if only_creates(summary):
-        safe_signals.append("Create-only changes (no destructive actions).")
-
-    if not has_resource(resources, "azurerm_public_ip"):
-        safe_signals.append("No public IP exposure.")
-
-    if has_resource(resources, "azurerm_network_security_group"):
-        safe_signals.append("Explicit network security group defined.")
-
-    if has_resource(resources, "azurerm_linux_virtual_machine"):
-        for r in resources:
-            if r["type"] == "azurerm_linux_virtual_machine" and r.get("count", 1) == 0:
-                safe_signals.append("VM explicitly disabled in CI/PR context.")
-
-    if len(safe_signals) >= 3 and risk != "HIGH":
-        risk = "LOW"
-        confidence = 0.7
-        comments.append("✅ Safe infrastructure patterns detected.")
-        reasons.extend(safe_signals)
-
-    # =================================================
-    # 📦 CHANGE VOLUME
-    # =================================================
-
-    total_changes = sum(summary.values())
-
-    if total_changes >= 8:
-        risk = "HIGH"
-        confidence = max(confidence, 0.9)
-        reasons.append("Large infrastructure change set detected.")
-        comments.append("⚠️ Consider splitting this PR into smaller changes.")
-        recommendations.append("Reduce blast radius by staging changes.")
-
-    elif total_changes >= 4:
-        risk = max(risk, "MEDIUM", key=["LOW", "MEDIUM", "HIGH"].index)
-        confidence = max(confidence, 0.6)
-
-    # =================================================
-    # 📚 HISTORICAL MEMORY (DAY 11)
-    # =================================================
-
+    # -------------------------------------------------
+    # 5. Historical context
+    # -------------------------------------------------
+    resource_types = [r["type"] for r in resources]
     history = find_similar_prs(resource_types, env)
 
     if history:
-        reasons.append(f"Similar patterns found in {len(history)} previous PR(s).")
-        comments.append("📚 Historical context applied to this review.")
+        risk_score += 1
+        reasons.append(
+            f"Historical context: {len(history)} similar change(s) seen before"
+        )
 
-        if any(h.get("risk_level") == "HIGH" for h in history):
-            confidence = min(confidence + 0.1, 0.95)
+    # -------------------------------------------------
+    # 6. Final risk level & confidence
+    # -------------------------------------------------
+    risk_level = score_to_level(risk_score)
+    confidence = min(0.95, 0.5 + (risk_score / 10))
 
-    # =================================================
-    # 🧠 FINAL RECOMMENDATIONS (SMART, NOT GENERIC)
-    # =================================================
+    # -------------------------------------------------
+    # 7. Human-style recommendations
+    # -------------------------------------------------
+    recommendations = []
 
-    if risk == "LOW":
-        recommendations.append("Proceed with standard review and merge process.")
+    if risk_level == "LOW":
+        recommendations.append(
+            "Change follows safe infrastructure patterns. Proceed with standard review."
+        )
 
-    elif risk == "MEDIUM":
-        recommendations.append("Ensure validation in lower environment before promotion.")
+    if risk_level == "MEDIUM":
+        recommendations.append(
+            "Validate this change in a lower environment before promotion."
+        )
 
-    elif risk == "HIGH":
+    if risk_level == "HIGH":
         recommendations.extend([
-            "Run during maintenance window.",
+            "Run during a maintenance window.",
             "Ensure rollback plan is documented.",
             "Notify dependent teams if applicable."
         ])
 
-    return {
+    # -------------------------------------------------
+    # 8. Build final review
+    # -------------------------------------------------
+    review = {
         "environment": env,
-        "risk_level": risk,
+        "risk_level": risk_level,
         "confidence": round(confidence, 2),
-        "reasons": list(dict.fromkeys(reasons)),
-        "review_comments": list(dict.fromkeys(comments)),
-        "recommendations": list(dict.fromkeys(recommendations))
+        "reasons": reasons + reducers,
+        "review_comments": [],
+        "recommendations": recommendations
     }
 
+    return review
+
 
 # -------------------------------------------------
-# Entry Point
+# Entry point
 # -------------------------------------------------
 
-def main(input_file, output_file):
+def main(input_file: str, output_file: str):
     with open(input_file, "r") as f:
         enriched_context = json.load(f)
 
     review = assess_risk(enriched_context)
+
+    # LLM = explanation only
     review = enrich_with_llm(enriched_context, review)
 
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
 
-    print("SUCCESS: Context-aware AI review generated")
+    print("SUCCESS: Pattern-based AI review generated")
     print(json.dumps(review, indent=2))
 
 
