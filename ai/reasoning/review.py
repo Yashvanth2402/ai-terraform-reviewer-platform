@@ -64,8 +64,6 @@ def assess_risk(enriched_context: dict) -> dict:
     # 3. Base risk score
     # -------------------------------------------------
     risk_score = 0.0
-    reasons = []
-    praise = []
 
     for pattern, count in pattern_counts.items():
         info = risk_defs.get(pattern)
@@ -88,44 +86,52 @@ def assess_risk(enriched_context: dict) -> dict:
     )
 
     # -------------------------------------------------
-    # 5. CLASSIFY create-only type (KEY FIX)
+    # 5. Classify create-only type (CRITICAL)
     # -------------------------------------------------
-    scaffold_only = is_create_only and not any(
+    has_compute = "compute_provisioning" in pattern_counts
+    has_secrets = any(
         p in pattern_counts
-        for p in ["compute_provisioning", "secret_material", "secret_exposure"]
+        for p in ["secret_material", "secret_exposure"]
     )
 
-    active_create = is_create_only and not scaffold_only
+    scaffold_only = is_create_only and not has_compute and not has_secrets
+    active_create = is_create_only and (has_compute or has_secrets)
+
+    reasons = []
+    praise = []
 
     # -------------------------------------------------
-    # 6. Scaffold infra (SAFE)
+    # 6. Scaffold infra (SAFE, LGTM allowed)
     # -------------------------------------------------
     if scaffold_only:
         risk_score = min(risk_score, 2.5)
-        reasons = ["Create-only scaffold infrastructure without public exposure"]
+        reasons = [
+            "Create-only scaffold infrastructure without public exposure"
+        ]
         praise.extend([
-            "Infrastructure scaffold only (no compute, no secrets)",
-            "No public exposure detected",
+            "No compute resources provisioned",
+            "No secrets generated or exposed",
             "Safe for development iteration"
         ])
 
     # -------------------------------------------------
-    # 7. Active create-only infra (NOT SAFE)
+    # 7. Active create-only infra (REAL-WORLD RULE)
     # -------------------------------------------------
     if active_create:
         risk_score = max(risk_score, 4.5)
         reasons = [
-            "Create-only change includes active resources (compute or secrets)"
+            "Create-only change includes active resources requiring human review"
         ]
 
-        if "secret_material" in pattern_counts:
-            reasons.append("Secret material generated in Terraform")
+        if has_secrets:
+            reasons.append(
+                "Secret material generated or exposed in Terraform (NOT recommended)"
+            )
 
-        if "secret_exposure" in pattern_counts:
-            reasons.append("Sensitive secret exposed via Terraform outputs or state")
-
-        if "compute_provisioning" in pattern_counts:
-            reasons.append("Compute resources provisioned requiring security hardening")
+        if has_compute:
+            reasons.append(
+                "Compute resources provisioned requiring security hardening"
+            )
 
     # -------------------------------------------------
     # 8. Security severity escalation
@@ -155,35 +161,49 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score *= 0.8
 
     # -------------------------------------------------
-    # 10. Final risk & decision
+    # 🔒 10. FINAL DECISION AUTHORITY (NON-NEGOTIABLE)
     # -------------------------------------------------
+
     risk_level = score_to_level(risk_score)
 
-    if risk_level == "LOW":
-        decision = "PASS"
-        decision_reason = "Safe infrastructure change"
-        recommendations = ["LGTM from an infrastructure safety perspective."]
-        confidence = 0.6
+    # ❌ Active create can NEVER be LGTM (real-world rule)
+    if active_create:
+        decision = "WARN"
+        decision_reason = "Active infrastructure creation requires human approval"
+        confidence = 0.85
+        recommendations = [
+            "Do not generate or store secrets in Terraform.",
+            "Use Azure Key Vault or pre-generated credentials.",
+            "Ensure compute resources follow hardening standards.",
+            "Require human review before merge."
+        ]
 
+    # ✅ Scaffold-only infra
+    elif risk_level == "LOW":
+        decision = "PASS"
+        decision_reason = "Safe scaffold infrastructure change"
+        confidence = 0.6
+        recommendations = [
+            "LGTM from an infrastructure safety perspective."
+        ]
+
+    # ⚠️ Everything else
     elif risk_level == "MEDIUM":
         decision = "WARN"
-        decision_reason = "Active infrastructure change requires review"
-        recommendations = [
-            "Avoid generating or storing secrets in Terraform.",
-            "Use Azure Key Vault or pre-generated credentials.",
-            "Ensure compute resources follow security hardening standards."
-        ]
+        decision_reason = "Infrastructure change requires review"
         confidence = 0.75
+        recommendations = [
+            "Review carefully and validate in a lower environment."
+        ]
 
+    # 🚫 High risk
     else:
         decision = "BLOCK"
         decision_reason = "High-risk infrastructure change"
-        recommendations = [
-            "Do not merge until security risks are addressed.",
-            "Remove secret generation from Terraform.",
-            "Introduce explicit network and identity controls."
-        ]
         confidence = 0.9
+        recommendations = [
+            "Do not merge until security risks are addressed."
+        ]
 
     # -------------------------------------------------
     # 11. Final review object
@@ -211,6 +231,8 @@ def main(input_file: str, output_file: str):
         enriched = json.load(f)
 
     review = assess_risk(enriched)
+
+    # LLM may explain, NEVER decide
     review = enrich_with_llm(enriched, review)
 
     with open(output_file, "w") as f:
