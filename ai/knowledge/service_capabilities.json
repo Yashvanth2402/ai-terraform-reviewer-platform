@@ -1,18 +1,104 @@
 {
-  "azurerm_storage_account": ["data_plane", "network_boundary"],
-  "azurerm_storage_container": ["data_plane", "public_exposure"],
-
-  "azurerm_sql_server": ["data_plane", "identity_boundary"],
-  "azurerm_sql_database": ["data_plane"],
-
-  "azurerm_kubernetes_cluster": ["control_plane", "compute_plane", "blast_radius"],
-
+  // =============================
+  // COMPUTE & RUNTIME
+  // =============================
   "azurerm_virtual_machine": ["compute_plane"],
   "azurerm_linux_virtual_machine": ["compute_plane"],
+  "azurerm_windows_virtual_machine": ["compute_plane"],
+  "azurerm_virtual_machine_scale_set": ["compute_plane", "blast_radius"],
+  "azurerm_container_group": ["compute_plane"],
+  "azurerm_kubernetes_cluster": ["control_plane", "compute_plane", "blast_radius"],
+  "azurerm_app_service": ["compute_plane", "public_entrypoint"],
+  "azurerm_app_service_plan": ["compute_plane"],
+  "azurerm_function_app": ["compute_plane", "public_entrypoint"],
+  "azurerm_batch_account": ["compute_plane"],
+  "azurerm_service_fabric_cluster": ["control_plane", "compute_plane", "blast_radius"],
+  "azurerm_spring_cloud_service": ["control_plane", "compute_plane"],
 
-  "azurerm_key_vault": ["secret_plane", "identity_boundary"],
-
+  // =============================
+  // NETWORKING
+  // =============================
   "azurerm_virtual_network": ["network_boundary"],
   "azurerm_subnet": ["network_boundary"],
-  "azurerm_network_security_group": ["network_boundary"]
+  "azurerm_network_interface": ["network_boundary"],
+  "azurerm_network_security_group": ["network_boundary"],
+  "azurerm_application_gateway": ["network_boundary", "public_entrypoint"],
+  "azurerm_frontdoor": ["network_boundary", "public_entrypoint"],
+  "azurerm_firewall": ["network_boundary", "blast_radius"],
+  "azurerm_route_table": ["network_boundary"],
+  "azurerm_virtual_network_gateway": ["network_boundary", "blast_radius"],
+  "azurerm_express_route_circuit": ["network_boundary", "blast_radius"],
+  "azurerm_load_balancer": ["network_boundary", "public_entrypoint"],
+  "azurerm_traffic_manager_profile": ["public_entrypoint"],
+  "azurerm_dns_zone": ["public_entrypoint"],
+  "azurerm_private_endpoint": ["network_boundary"],
+  "azurerm_private_link_service": ["network_boundary"],
+  "azurerm_bastion_host": ["network_boundary"],
+  "azurerm_nat_gateway": ["network_boundary"],
+  "azurerm_virtual_hub": ["network_boundary", "blast_radius"],
+  "azurerm_virtual_wan": ["network_boundary", "blast_radius"],
+  "azurerm_web_application_firewall_policy": ["network_boundary"],
+
+  // =============================
+  // STORAGE & DATA
+  // =============================
+  "azurerm_storage_account": ["data_plane", "network_boundary"],
+  "azurerm_storage_container": ["data_plane"],
+  "azurerm_storage_share": ["data_plane"],
+  "azurerm_storage_queue": ["data_plane"],
+  "azurerm_storage_table": ["data_plane"],
+  "azurerm_storage_data_lake_gen2_filesystem": ["data_plane"],
+  "azurerm_disk_encryption_set": ["data_plane", "secret_plane"],
+  "azurerm_backup_vault": ["data_plane", "blast_radius"],
+  "azurerm_site_recovery_vault": ["data_plane", "blast_radius"],
+
+  // =============================
+  // DATABASES
+  // =============================
+  "azurerm_sql_server": ["data_plane", "identity_boundary"],
+  "azurerm_sql_database": ["data_plane"],
+  "azurerm_sql_managed_instance": ["data_plane", "blast_radius"],
+  "azurerm_mysql_server": ["data_plane"],
+  "azurerm_postgresql_server": ["data_plane"],
+  "azurerm_cosmosdb_account": ["data_plane", "blast_radius"],
+  "azurerm_redis_cache": ["data_plane"],
+  "azurerm_synapse_workspace": ["data_plane", "blast_radius"],
+
+  // =============================
+  // SECURITY & IDENTITY
+  // =============================
+  "azurerm_key_vault": ["secret_plane", "identity_boundary"],
+  "azurerm_key_vault_secret": ["secret_plane"],
+  "azurerm_key_vault_key": ["secret_plane"],
+  "azurerm_key_vault_certificate": ["secret_plane"],
+  "azurerm_role_assignment": ["identity_boundary"],
+  "azurerm_role_definition": ["identity_boundary"],
+  "azurerm_active_directory_domain_service": ["identity_boundary", "blast_radius"],
+
+  // =============================
+  // GOVERNANCE & MANAGEMENT
+  // =============================
+  "azurerm_policy_assignment": ["governance_plane"],
+  "azurerm_policy_definition": ["governance_plane"],
+  "azurerm_management_group": ["governance_plane", "blast_radius"],
+  "azurerm_management_lock": ["governance_plane"],
+  "azurerm_monitor_diagnostic_setting": ["observability_plane"],
+  "azurerm_log_analytics_workspace": ["observability_plane"],
+  "azurerm_monitor_activity_log_alert": ["observability_plane"],
+
+  // =============================
+  // INTEGRATION, MESSAGING, IOT
+  // =============================
+  "azurerm_event_hubs_namespace": ["data_plane"],
+  "azurerm_servicebus_namespace": ["data_plane"],
+  "azurerm_event_hub": ["data_plane"],
+  "azurerm_iot_hub": ["data_plane", "blast_radius"],
+  "azurerm_data_factory": ["data_plane", "blast_radius"],
+
+  // =============================
+  // META / SAFE
+  // =============================
+  "azurerm_resource_group": [],
+  "azurerm_tags": [],
+  "azurerm_client_config": []
 }
