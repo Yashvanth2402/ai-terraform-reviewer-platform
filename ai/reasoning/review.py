@@ -3,12 +3,13 @@ import sys
 from collections import Counter
 
 from ai.knowledge.knowledge_loader import load_risk_patterns
+from ai.reasoning.intent_detector import detect_intent
 from ai.reasoning.llm_enrichment import enrich_with_llm
 from ai.memory.memory_store import find_similar_prs
-from ai.reasoning.intent_detector import detect_intent
+
 
 # -------------------------------------------------
-# Helper functions
+# Helpers
 # -------------------------------------------------
 
 def score_to_level(score: float) -> str:
@@ -20,7 +21,7 @@ def score_to_level(score: float) -> str:
 
 
 # -------------------------------------------------
-# Core Pattern Scoring Engine
+# Core Pattern-Based Risk Engine
 # -------------------------------------------------
 
 def assess_risk(enriched_context: dict) -> dict:
@@ -31,7 +32,12 @@ def assess_risk(enriched_context: dict) -> dict:
     risk_patterns = load_risk_patterns()
 
     # -------------------------------------------------
-    # 1. Collect patterns
+    # 1. Detect intent (WHY this PR exists)
+    # -------------------------------------------------
+    intent = detect_intent(enriched_context)
+
+    # -------------------------------------------------
+    # 2. Collect all risk patterns
     # -------------------------------------------------
     pattern_list = []
     for r in resources:
@@ -40,9 +46,9 @@ def assess_risk(enriched_context: dict) -> dict:
     pattern_counts = Counter(pattern_list)
 
     # -------------------------------------------------
-    # 2. Base risk score from patterns
+    # 3. Base risk score from patterns
     # -------------------------------------------------
-    risk_score = 0
+    risk_score = 0.0
     reasons = []
 
     for pattern, count in pattern_counts.items():
@@ -58,7 +64,7 @@ def assess_risk(enriched_context: dict) -> dict:
         )
 
     # -------------------------------------------------
-    # 3. Contextual reducers (GOOD PR SIGNALS)
+    # 4. Risk reducers (GOOD PR SIGNALS)
     # -------------------------------------------------
     reducers = []
 
@@ -72,17 +78,32 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score -= 2
         reducers.append("No public exposure detected")
 
-    # VM disabled / CI-safe pattern
-    vm_disabled = any(
+    # CI-safe / gated compute (VM disabled, feature-flagged)
+    gated_compute = any(
         r["type"] == "azurerm_linux_virtual_machine" and r.get("action") == "create"
         for r in resources
     )
-    if vm_disabled:
+    if gated_compute:
         risk_score -= 1
-        reducers.append("Compute resources gated or CI-safe")
+        reducers.append("Compute resources are gated / CI-safe")
 
     # -------------------------------------------------
-    # 4. Environment weighting
+    # 5. Intent-based adjustment (human reasoning)
+    # -------------------------------------------------
+    if intent == "bootstrap":
+        risk_score -= 1
+        reducers.append("Bootstrap intent detected (first-time infra setup)")
+
+    if intent == "security_hardening":
+        risk_score -= 2
+        reducers.append("Security-hardening intent detected")
+
+    if intent == "risky_change":
+        risk_score += 2
+        reasons.append("Destructive or high-impact intent detected")
+
+    # -------------------------------------------------
+    # 6. Environment weighting
     # -------------------------------------------------
     if env == "prod":
         risk_score *= 1.3
@@ -90,7 +111,7 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score *= 0.7
 
     # -------------------------------------------------
-    # 5. Historical context
+    # 7. Historical context (learning, not guessing)
     # -------------------------------------------------
     resource_types = [r["type"] for r in resources]
     history = find_similar_prs(resource_types, env)
@@ -98,17 +119,17 @@ def assess_risk(enriched_context: dict) -> dict:
     if history:
         risk_score += 1
         reasons.append(
-            f"Historical context: {len(history)} similar change(s) seen before"
+            f"Historical context: {len(history)} similar change(s) observed previously"
         )
 
     # -------------------------------------------------
-    # 6. Final risk level & confidence
+    # 8. Final risk level & confidence
     # -------------------------------------------------
     risk_level = score_to_level(risk_score)
-    confidence = min(0.95, 0.5 + (risk_score / 10))
+    confidence = min(0.95, max(0.4, 0.5 + (risk_score / 10)))
 
     # -------------------------------------------------
-    # 7. Human-style recommendations
+    # 9. Recommendations (senior-engineer tone)
     # -------------------------------------------------
     recommendations = []
 
@@ -124,19 +145,20 @@ def assess_risk(enriched_context: dict) -> dict:
 
     if risk_level == "HIGH":
         recommendations.extend([
-            "Run during a maintenance window.",
-            "Ensure rollback plan is documented.",
-            "Notify dependent teams if applicable."
+            "Run this change during a defined maintenance window.",
+            "Ensure a rollback plan is documented and tested.",
+            "Notify dependent teams if shared infrastructure is involved."
         ])
 
     # -------------------------------------------------
-    # 8. Build final review
+    # 10. Build review object
     # -------------------------------------------------
     review = {
         "environment": env,
+        "intent": intent,
         "risk_level": risk_level,
         "confidence": round(confidence, 2),
-        "reasons": reasons + reducers,
+        "reasons": list(dict.fromkeys(reasons + reducers)),
         "review_comments": [],
         "recommendations": recommendations
     }
@@ -145,7 +167,7 @@ def assess_risk(enriched_context: dict) -> dict:
 
 
 # -------------------------------------------------
-# Entry point
+# Entry Point
 # -------------------------------------------------
 
 def main(input_file: str, output_file: str):
@@ -154,13 +176,13 @@ def main(input_file: str, output_file: str):
 
     review = assess_risk(enriched_context)
 
-    # LLM = explanation only
+    # LLM is used ONLY to explain, never to decide
     review = enrich_with_llm(enriched_context, review)
 
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
 
-    print("SUCCESS: Pattern-based AI review generated")
+    print("SUCCESS: Pattern-based, intent-aware AI review generated")
     print(json.dumps(review, indent=2))
 
 
