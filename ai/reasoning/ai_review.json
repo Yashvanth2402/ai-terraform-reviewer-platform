@@ -1,0 +1,12 @@
+{
+  "environment": "dev",
+  "risk_level": "HIGH",
+  "reasons": [
+    "Shared infrastructure resources are being modified, increasing blast radius.",
+    "Network resources are being modified, which can affect connectivity."
+  ],
+  "review_comments": [
+    "\u26a0\ufe0f Shared infrastructure change detected. Changes to shared components can impact multiple services.",
+    "\u26a0\ufe0f Network-level changes detected. Ensure no workloads are unintentionally impacted."
+  ]
+}

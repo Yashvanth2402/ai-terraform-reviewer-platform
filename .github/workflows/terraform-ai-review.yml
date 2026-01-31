@@ -1,0 +1,76 @@
+name: Terraform AI Review Platform
+
+on:
+  workflow_call:
+    inputs:
+      terraform_path:
+        description: "Path to Terraform code"
+        required: true
+        type: string
+      environment:
+        description: "Environment name (dev/stage/prod)"
+        required: true
+        type: string
+    secrets:
+      AZURE_OPENAI_KEY:
+        required: true
+      AZURE_OPENAI_ENDPOINT:
+        required: true
+      AZURE_OPENAI_DEPLOYMENT:
+        required: true
+
+jobs:
+  ai-terraform-review:
+    runs-on: ubuntu-latest
+
+    permissions:
+      pull-requests: write
+      contents: read
+
+    steps:
+      - name: Checkout caller repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          pip install -r ${{ github.action_path }}/requirements.txt
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+
+      - name: Terraform Init
+        working-directory: ${{ inputs.terraform_path }}
+        run: terraform init -input=false
+
+      - name: Terraform Plan
+        working-directory: ${{ inputs.terraform_path }}
+        run: terraform plan -out=tfplan -input=false
+
+      - name: Convert Plan to JSON
+        working-directory: ${{ inputs.terraform_path }}
+        run: terraform show -json tfplan > tfplan.json
+
+      - name: Enrich Terraform Context
+        run: |
+          python ${{ github.action_path }}/ai/context/enrich.py \
+          ${{ inputs.terraform_path }}/tfplan.json \
+          enriched_context.json
+
+      - name: Run AI Review
+        env:
+          AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
+          AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
+          AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python ${{ github.action_path }}/ai/reasoning/review.py \
+          enriched_context.json \
+          ai_review.json
+
+          python ${{ github.action_path }}/ai/reasoning/post_comment.py
