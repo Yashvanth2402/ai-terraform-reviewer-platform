@@ -1,161 +1,204 @@
 import json
 import sys
+from collections import Counter
 
 from ai.reasoning.llm_enrichment import enrich_with_llm
 from ai.memory.memory_store import find_similar_prs
 
 
+# -------------------------------------------------
+# Helper functions
+# -------------------------------------------------
+
+def has_resource(resources, rtype):
+    return any(r["type"] == rtype for r in resources)
+
+
+def count_resources(resources, rtype):
+    return sum(1 for r in resources if r["type"] == rtype)
+
+
+def only_creates(summary):
+    return summary.get("update", 0) == 0 and summary.get("delete", 0) == 0
+
+
+# -------------------------------------------------
+# Core Risk Engine
+# -------------------------------------------------
+
 def assess_risk(enriched_context: dict) -> dict:
-    environment = enriched_context.get("environment", "unknown")
+    env = enriched_context.get("environment", "unknown")
     resources = enriched_context.get("resources", [])
     summary = enriched_context.get("summary", {})
 
+    resource_types = [r["type"] for r in resources]
+    type_counts = Counter(resource_types)
+
     risk = "LOW"
+    confidence = 0.3
     reasons = []
     comments = []
     recommendations = []
 
-    # -------------------------------------------------
-    # Signal 1: Shared Infrastructure (Blast Radius)
-    # -------------------------------------------------
-    shared_changes = [
-        r for r in resources if r.get("classification") == "shared-infra"
-    ]
-    if shared_changes:
-        risk = "MEDIUM"
-        reasons.append(
-            "Shared Azure infrastructure is being modified, increasing blast radius across workloads."
-        )
-        comments.append(
-            "⚠️ Shared Azure infrastructure change detected. "
-            "Failures here can impact multiple teams and services."
-        )
+    # =================================================
+    # 🔥 HARD DANGER (ALWAYS HIGH)
+    # =================================================
 
-    # -------------------------------------------------
-    # Signal 2: Azure Networking Risk
-    # -------------------------------------------------
-    network_types = ["azurerm_virtual_network", "azurerm_subnet"]
-    network_changes = [
-        r for r in resources if r.get("type") in network_types
-    ]
+    if has_resource(resources, "azurerm_public_ip"):
+        risk = "HIGH"
+        confidence = 0.9
+        reasons.append("Public IP resource detected, increasing exposure risk.")
+        comments.append("🚨 Public IP detected. Ensure this is strictly required and protected.")
+        recommendations.append("Avoid public IPs unless absolutely necessary. Prefer private endpoints.")
+
+    if has_resource(resources, "azurerm_network_security_group"):
+        for r in resources:
+            if r["type"] == "azurerm_network_security_group":
+                for rule in r.get("security_rules", []):
+                    if rule.get("source_address_prefix") == "*" and rule.get("destination_port_range") == "22":
+                        reasons.append("SSH (22) is open to all sources.")
+                        comments.append("⚠️ SSH open to the internet. Restrict source IPs.")
+                        recommendations.append("Limit SSH access to corporate IP ranges or use Bastion.")
+
+    # =================================================
+    # 🌐 NETWORKING (CONTEXT-AWARE)
+    # =================================================
+
+    network_resources = {
+        "azurerm_virtual_network",
+        "azurerm_subnet",
+        "azurerm_route_table",
+        "azurerm_nat_gateway"
+    }
+
+    network_changes = any(t in network_resources for t in resource_types)
+
     if network_changes:
+        reasons.append("Azure networking resources are being modified.")
+
+        if not only_creates(summary):
+            risk = "HIGH"
+            confidence = max(confidence, 0.85)
+            comments.append("🚨 Network modification detected (update/delete). Rollback can be complex.")
+            recommendations.append("Validate routing, CIDR overlaps, and rollback strategy.")
+        else:
+            risk = max(risk, "MEDIUM", key=["LOW", "MEDIUM", "HIGH"].index)
+            confidence = max(confidence, 0.6)
+            comments.append("⚠️ New networking components added. Review CIDR and dependencies.")
+
+    # =================================================
+    # 🖥️ COMPUTE (SAFE VS UNSAFE)
+    # =================================================
+
+    if has_resource(resources, "azurerm_linux_virtual_machine"):
+        if env == "prod":
+            risk = "HIGH"
+            confidence = max(confidence, 0.85)
+            reasons.append("Compute resources introduced in production.")
+            comments.append("🚨 VM changes in production detected.")
+            recommendations.append("Use phased rollout or blue-green strategy.")
+        else:
+            reasons.append("VM resources introduced in non-production.")
+            comments.append("ℹ️ VM changes in non-prod environment.")
+
+    # =================================================
+    # 🧱 SAFE PATTERNS (RISK REDUCERS)
+    # =================================================
+
+    safe_signals = []
+
+    if only_creates(summary):
+        safe_signals.append("Create-only changes (no destructive actions).")
+
+    if not has_resource(resources, "azurerm_public_ip"):
+        safe_signals.append("No public IP exposure.")
+
+    if has_resource(resources, "azurerm_network_security_group"):
+        safe_signals.append("Explicit network security group defined.")
+
+    if has_resource(resources, "azurerm_linux_virtual_machine"):
+        for r in resources:
+            if r["type"] == "azurerm_linux_virtual_machine" and r.get("count", 1) == 0:
+                safe_signals.append("VM explicitly disabled in CI/PR context.")
+
+    if len(safe_signals) >= 3 and risk != "HIGH":
+        risk = "LOW"
+        confidence = 0.7
+        comments.append("✅ Safe infrastructure patterns detected.")
+        reasons.extend(safe_signals)
+
+    # =================================================
+    # 📦 CHANGE VOLUME
+    # =================================================
+
+    total_changes = sum(summary.values())
+
+    if total_changes >= 8:
         risk = "HIGH"
-        reasons.append(
-            "Azure networking resources are being modified, which can affect connectivity, routing, or IP allocation."
-        )
-        comments.append(
-            "🚨 Azure network-level changes detected. "
-            "Subnet or VNet changes are high risk and difficult to rollback."
-        )
+        confidence = max(confidence, 0.9)
+        reasons.append("Large infrastructure change set detected.")
+        comments.append("⚠️ Consider splitting this PR into smaller changes.")
+        recommendations.append("Reduce blast radius by staging changes.")
 
-    # -------------------------------------------------
-    # Signal 3: Environment Escalation
-    # -------------------------------------------------
-    if environment == "prod":
-        risk = "HIGH"
-        reasons.append(
-            "Changes are targeting the production environment with potential customer impact."
-        )
-        comments.append(
-            "🚨 Production environment change detected. "
-            "Recommend maintenance window, validation plan, and rollback strategy."
-        )
+    elif total_changes >= 4:
+        risk = max(risk, "MEDIUM", key=["LOW", "MEDIUM", "HIGH"].index)
+        confidence = max(confidence, 0.6)
 
-    # -------------------------------------------------
-    # Signal 4: Change Volume
-    # -------------------------------------------------
-    total_changes = (
-        summary.get("create", 0)
-        + summary.get("update", 0)
-        + summary.get("delete", 0)
-    )
-    if total_changes >= 5:
-        risk = "HIGH"
-        reasons.append(
-            "Multiple infrastructure changes in a single deployment increase operational risk."
-        )
-        comments.append(
-            "⚠️ Large infrastructure change detected. "
-            "Consider breaking this into smaller, staged deployments."
-        )
+    # =================================================
+    # 📚 HISTORICAL MEMORY (DAY 11)
+    # =================================================
 
-    # -------------------------------------------------
-    # Confidence Scoring (Base)
-    # -------------------------------------------------
-    confidence = 0.3
-    if risk == "MEDIUM":
-        confidence = 0.6
-    elif risk == "HIGH":
-        confidence = 0.85
+    history = find_similar_prs(resource_types, env)
 
-    # -------------------------------------------------
-    # Actionable Recommendations
-    # -------------------------------------------------
-    if risk == "HIGH":
-        recommendations.extend([
-            "Run this change during a defined maintenance window.",
-            "Ensure a rollback plan is documented and tested.",
-            "Validate impact in a lower environment before production rollout."
-        ])
+    if history:
+        reasons.append(f"Similar patterns found in {len(history)} previous PR(s).")
+        comments.append("📚 Historical context applied to this review.")
 
-    if any(r.get("type") == "azurerm_subnet" for r in resources):
-        recommendations.append(
-            "Verify subnet CIDR usage to avoid IP exhaustion or overlapping address ranges."
-        )
-
-    # -------------------------------------------------
-    # Day 11 — Historical PR Memory Signal
-    # -------------------------------------------------
-    resource_types = [r.get("type") for r in resources]
-
-    historical_prs = find_similar_prs(resource_types, environment)
-
-    if historical_prs:
-        reasons.append(
-            f"Similar infrastructure changes were detected in {len(historical_prs)} previous PR(s)."
-        )
-        comments.append(
-            "📚 Historical context: Similar changes have occurred before. "
-            "Review past outcomes to avoid repeating issues."
-        )
-
-        # Escalate confidence if repeated high-risk history
-        high_risk_history = [
-            pr for pr in historical_prs if pr.get("risk_level") == "HIGH"
-        ]
-        if high_risk_history and risk != "LOW":
+        if any(h.get("risk_level") == "HIGH" for h in history):
             confidence = min(confidence + 0.1, 0.95)
 
+    # =================================================
+    # 🧠 FINAL RECOMMENDATIONS (SMART, NOT GENERIC)
+    # =================================================
+
+    if risk == "LOW":
+        recommendations.append("Proceed with standard review and merge process.")
+
+    elif risk == "MEDIUM":
+        recommendations.append("Ensure validation in lower environment before promotion.")
+
+    elif risk == "HIGH":
+        recommendations.extend([
+            "Run during maintenance window.",
+            "Ensure rollback plan is documented.",
+            "Notify dependent teams if applicable."
+        ])
+
     return {
-        "environment": environment,
+        "environment": env,
         "risk_level": risk,
-        "confidence": confidence,
-        "reasons": reasons,
-        "review_comments": comments,
-        "recommendations": recommendations
+        "confidence": round(confidence, 2),
+        "reasons": list(dict.fromkeys(reasons)),
+        "review_comments": list(dict.fromkeys(comments)),
+        "recommendations": list(dict.fromkeys(recommendations))
     }
 
 
-def main(input_file: str, output_file: str):
-    # Load enriched Terraform context
+# -------------------------------------------------
+# Entry Point
+# -------------------------------------------------
+
+def main(input_file, output_file):
     with open(input_file, "r") as f:
         enriched_context = json.load(f)
 
-    # -----------------------------
-    # Deterministic AI Reasoning
-    # -----------------------------
     review = assess_risk(enriched_context)
-
-    # -----------------------------
-    # LLM Enrichment (Explanation Only)
-    # -----------------------------
     review = enrich_with_llm(enriched_context, review)
 
-    # Write final AI review output
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
 
-    print("SUCCESS: AI review generated with history-aware reasoning and LLM explanation")
+    print("SUCCESS: Context-aware AI review generated")
     print(json.dumps(review, indent=2))
 
 
