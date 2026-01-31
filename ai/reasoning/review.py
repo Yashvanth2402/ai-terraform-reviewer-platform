@@ -1,6 +1,8 @@
 import json
 import sys
 from collections import Counter
+from pathlib import Path
+import yaml
 
 from ai.knowledge.knowledge_loader import (
     load_risk_patterns,
@@ -9,6 +11,7 @@ from ai.knowledge.knowledge_loader import (
 from ai.reasoning.intent_detector import detect_intent
 from ai.reasoning.llm_enrichment import enrich_with_llm
 from ai.memory.memory_store import find_similar_prs
+from ai.policies.policy_loader import load_policy_packs
 
 
 # -------------------------------------------------
@@ -23,20 +26,41 @@ def score_to_level(score: float) -> str:
     return "LOW"
 
 
+def load_repo_policy_config():
+    """
+    Loads repo-level AI reviewer configuration.
+    This file lives in the CONSUMER Terraform repo.
+    """
+    config_path = Path(".ai-reviewer.yaml")
+    if not config_path.exists():
+        return {
+            "environment": "dev",
+            "enabled_policies": []
+        }
+
+    with open(config_path, "r") as f:
+        return yaml.safe_load(f)
+
+
 # -------------------------------------------------
-# Core Pattern-Based Risk Engine
+# Core Review Engine
 # -------------------------------------------------
 
 def assess_risk(enriched_context: dict) -> dict:
-    env = enriched_context.get("environment", "dev")
+    repo_config = load_repo_policy_config()
+
+    env = repo_config.get("environment", "dev")
+    enabled_policies = repo_config.get("enabled_policies", [])
+
     resources = enriched_context.get("resources", [])
     summary = enriched_context.get("summary", {})
 
     risk_patterns = load_risk_patterns()
     security_severity_map = load_security_severity()
+    policy_packs = load_policy_packs()
 
     # -------------------------------------------------
-    # 1. Detect intent (WHY the PR exists)
+    # 1. Detect intent
     # -------------------------------------------------
     intent = detect_intent(enriched_context)
 
@@ -50,7 +74,7 @@ def assess_risk(enriched_context: dict) -> dict:
     pattern_counts = Counter(all_patterns)
 
     # -------------------------------------------------
-    # 3. Base risk score from patterns
+    # 3. Base risk scoring
     # -------------------------------------------------
     risk_score = 0.0
     reasons = []
@@ -61,15 +85,13 @@ def assess_risk(enriched_context: dict) -> dict:
         if not info:
             continue
 
-        contribution = info["base_score"] * count
-        risk_score += contribution
-
+        risk_score += info["base_score"] * count
         reasons.append(
             f"{pattern} detected ({count}×): {info['description']}"
         )
 
     # -------------------------------------------------
-    # 4. Risk reducers (GOOD engineering signals)
+    # 4. Risk reducers (good engineering signals)
     # -------------------------------------------------
     if summary.get("update", 0) == 0 and summary.get("delete", 0) == 0:
         risk_score -= 2
@@ -88,7 +110,7 @@ def assess_risk(enriched_context: dict) -> dict:
         praise.append("Security hardening change detected")
 
     # -------------------------------------------------
-    # 5. Intent-based escalation
+    # 5. Intent escalation
     # -------------------------------------------------
     if intent == "risky_change":
         risk_score += 2
@@ -103,28 +125,26 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score *= 0.7
 
     # -------------------------------------------------
-    # 7. Security Severity Engine
+    # 7. Security severity engine
     # -------------------------------------------------
     security_findings = []
 
     for pattern in pattern_counts:
-        sec_info = security_severity_map.get(pattern)
-        if not sec_info:
+        sec = security_severity_map.get(pattern)
+        if not sec:
             continue
 
-        severity = sec_info["severity"]
+        severity = sec["severity"]
 
-        # Environment-aware downgrade
         if env == "dev" and severity == "HIGH":
             severity = "MEDIUM"
 
         security_findings.append({
             "pattern": pattern,
             "severity": severity,
-            "description": sec_info["description"]
+            "description": sec["description"]
         })
 
-    # Security-based escalation
     if any(f["severity"] == "CRITICAL" for f in security_findings):
         risk_score += 4
         reasons.append("Critical security exposure detected")
@@ -134,7 +154,31 @@ def assess_risk(enriched_context: dict) -> dict:
         reasons.append("High security exposure in production")
 
     # -------------------------------------------------
-    # 8. Historical context (learning, not guessing)
+    # 8. Policy pack enforcement (DAY 7)
+    # -------------------------------------------------
+    policy_violations = []
+
+    for policy_name in enabled_policies:
+        policy = policy_packs.get(policy_name)
+        if not policy:
+            continue
+
+        for pattern in policy["patterns"]:
+            if pattern in pattern_counts:
+                policy_violations.append({
+                    "policy": policy_name,
+                    "pattern": pattern,
+                    "description": policy["description"]
+                })
+
+    if policy_violations:
+        risk_score += len(policy_violations)
+        reasons.append(
+            f"Policy violations detected: {', '.join(p['policy'] for p in policy_violations)}"
+        )
+
+    # -------------------------------------------------
+    # 9. Historical context
     # -------------------------------------------------
     resource_types = [r["type"] for r in resources]
     history = find_similar_prs(resource_types, env)
@@ -146,20 +190,18 @@ def assess_risk(enriched_context: dict) -> dict:
         )
 
     # -------------------------------------------------
-    # 9. Final risk & confidence
+    # 10. Final risk & confidence
     # -------------------------------------------------
     risk_level = score_to_level(risk_score)
     confidence = min(0.95, max(0.45, 0.5 + (risk_score / 10)))
 
     # -------------------------------------------------
-    # 10. Recommendations (senior engineer tone)
+    # 11. Recommendations
     # -------------------------------------------------
     recommendations = []
 
     if risk_level == "LOW":
-        recommendations.append(
-            "LGTM from an infrastructure safety perspective."
-        )
+        recommendations.append("LGTM from an infrastructure safety perspective.")
 
     elif risk_level == "MEDIUM":
         recommendations.append(
@@ -174,9 +216,9 @@ def assess_risk(enriched_context: dict) -> dict:
         ])
 
     # -------------------------------------------------
-    # 11. Build final review object
+    # 12. Final review object
     # -------------------------------------------------
-    review = {
+    return {
         "environment": env,
         "intent": intent,
         "risk_level": risk_level,
@@ -184,11 +226,10 @@ def assess_risk(enriched_context: dict) -> dict:
         "reasons": list(dict.fromkeys(reasons)),
         "praise": praise,
         "security_findings": security_findings,
+        "policy_violations": policy_violations,
         "review_comments": [],
         "recommendations": recommendations
     }
-
-    return review
 
 
 # -------------------------------------------------
@@ -201,13 +242,13 @@ def main(input_file: str, output_file: str):
 
     review = assess_risk(enriched_context)
 
-    # LLM is used ONLY to explain, never to decide
+    # LLM explains, never decides
     review = enrich_with_llm(enriched_context, review)
 
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
 
-    print("SUCCESS: Production-grade AI Terraform review generated")
+    print("SUCCESS: Policy-aware AI Terraform review generated")
     print(json.dumps(review, indent=2))
 
 
