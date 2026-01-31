@@ -33,10 +33,6 @@ def assess_risk(ctx: dict) -> dict:
         summary.get("delete", 0) == 0
     )
 
-    reasons = []
-    recommendations = []
-    confidence = 0.6
-
     # -------------------------------------------------
     # 🔴 HARD BLOCK — Public Data Plane
     # -------------------------------------------------
@@ -82,7 +78,7 @@ def assess_risk(ctx: dict) -> dict:
     return {
         "risk_level": "LOW",
         "decision": "PASS",
-        "confidence": confidence,
+        "confidence": 0.6,
         "reasons": [
             "Create-only scaffold infrastructure without public exposure"
         ],
@@ -107,10 +103,9 @@ def main(input_file: str, output_file: str):
     review["environment"] = env
 
     # -------------------------------------------------
-    # 🤖 OPTION 1 — LLM ONLY EXPLAINS (NOT DECIDES)
+    # 🤖 LLM ALWAYS ENABLED (EXPLAINS ONLY)
     # -------------------------------------------------
-    if review["decision"] != "BLOCK":
-        review = enrich_with_llm(ctx, review)
+    review = enrich_with_llm(ctx, review)
 
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
