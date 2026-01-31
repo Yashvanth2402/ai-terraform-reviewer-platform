@@ -1,67 +1,83 @@
 import json
 import sys
-from pathlib import Path
-
-from ai.knowledge.knowledge_loader import load_service_capabilities
+from collections import defaultdict
 
 
-def extract_action(change: dict) -> str:
-    """
-    Determine Terraform action: create / update / delete
-    """
-    actions = change.get("actions", [])
-    if "create" in actions:
-        return "create"
-    if "update" in actions:
-        return "update"
-    if "delete" in actions:
-        return "delete"
-    return "unknown"
-
-
-def enrich_plan(plan_file: str, output_file: str):
-    with open(plan_file, "r") as f:
+def enrich_plan(plan_path: str, output_path: str):
+    with open(plan_path, "r") as f:
         plan = json.load(f)
 
-    service_capabilities = load_service_capabilities()
+    resources = []
+    summary = defaultdict(int)
+    global_patterns = set()
 
-    resource_changes = plan.get("resource_changes", [])
+    # -----------------------------------------
+    # Resource-level detection
+    # -----------------------------------------
+    for rc in plan.get("resource_changes", []):
+        rtype = rc["type"]
+        name = rc["name"]
+        actions = rc["change"]["actions"]
 
-    enriched_resources = []
-    summary = {"create": 0, "update": 0, "delete": 0}
+        for a in actions:
+            summary[a] += 1
 
-    for rc in resource_changes:
-        resource_type = rc.get("type")
-        change = rc.get("change", {})
-        action = extract_action(change)
+        patterns = set()
 
-        if action in summary:
-            summary[action] += 1
+        # Core infra patterns
+        if rtype.startswith("azurerm_virtual_network") or rtype.startswith("azurerm_subnet"):
+            patterns.add("network_boundary")
 
-        # 🔑 CORE CHANGE — PATTERN MAPPING
-        patterns = service_capabilities.get(
-            resource_type,
-            ["unknown_service"]
-        )
+        if rtype.startswith("azurerm_network_security_group"):
+            patterns.add("identity_boundary")
 
-        enriched_resources.append({
-            "type": resource_type,
-            "name": rc.get("name"),
-            "action": action,
-            "patterns": patterns
+        if rtype.startswith("azurerm_resource_group"):
+            patterns.add("blast_radius")
+
+        # 🔐 Secret material generation
+        if rtype == "tls_private_key":
+            patterns.add("secret_material")
+
+        # 🖥️ Compute provisioning
+        if rtype in [
+            "azurerm_linux_virtual_machine",
+            "azurerm_windows_virtual_machine"
+        ]:
+            patterns.add("compute_provisioning")
+
+        resources.append({
+            "type": rtype,
+            "name": name,
+            "actions": actions,
+            "patterns": list(patterns)
         })
 
-    enriched_context = {
-        "environment": "dev",  # later comes from workflow input
-        "summary": summary,
-        "resources": enriched_resources
+        global_patterns.update(patterns)
+
+    # -----------------------------------------
+    # Output-level detection (CRITICAL)
+    # -----------------------------------------
+    outputs = plan.get("planned_values", {}).get("outputs", {})
+
+    for _, output in outputs.items():
+        if output.get("sensitive", False):
+            global_patterns.add("secret_exposure")
+
+    # Attach global patterns to all resources
+    for r in resources:
+        r["patterns"].extend(
+            p for p in global_patterns if p not in r["patterns"]
+        )
+
+    enriched = {
+        "resources": resources,
+        "summary": dict(summary)
     }
 
-    with open(output_file, "w") as f:
-        json.dump(enriched_context, f, indent=2)
+    with open(output_path, "w") as f:
+        json.dump(enriched, f, indent=2)
 
-    print("SUCCESS: Terraform plan enriched with risk patterns")
-    print(json.dumps(enriched_context, indent=2))
+    print(f"SUCCESS: Enriched context written to {output_path}")
 
 
 if __name__ == "__main__":
