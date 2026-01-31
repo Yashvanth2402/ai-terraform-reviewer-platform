@@ -13,14 +13,14 @@ on:
         type: string
 
     secrets:
+      AZURE_CREDENTIALS:
+        required: true
       AZURE_OPENAI_KEY:
         required: false
       AZURE_OPENAI_ENDPOINT:
         required: false
       AZURE_OPENAI_DEPLOYMENT:
         required: false
-      AZURE_CREDENTIALS:
-        required: true
 
 permissions:
   contents: read
@@ -32,13 +32,13 @@ jobs:
 
     steps:
       # -------------------------------------------------
-      # 1️⃣ Checkout CONSUMER repo (Terraform code)
+      # 1️⃣ Checkout CONSUMER repository (Terraform code)
       # -------------------------------------------------
       - name: Checkout consumer repository
         uses: actions/checkout@v4
 
       # -------------------------------------------------
-      # 2️⃣ Checkout PLATFORM repo (AI logic)
+      # 2️⃣ Checkout PLATFORM repository (AI logic)
       # -------------------------------------------------
       - name: Checkout AI reviewer platform
         uses: actions/checkout@v4
@@ -90,7 +90,7 @@ jobs:
         run: terraform show -json tfplan > tfplan.json
 
       # -------------------------------------------------
-      # 7️⃣ Enrich Terraform Context (ABSOLUTE PATHS)
+      # 7️⃣ Enrich Terraform Context (GUARANTEED OUTPUT)
       # -------------------------------------------------
       - name: Enrich Terraform Context
         env:
@@ -101,23 +101,34 @@ jobs:
           ${{ github.workspace }}/enriched_context.json
 
       # -------------------------------------------------
-      # 8️⃣ Run AI Review Engine
+      # 8️⃣ Verify enriched context (SAFETY NET)
+      # -------------------------------------------------
+      - name: Verify enriched context exists
+        run: |
+          if [ ! -f "${{ github.workspace }}/enriched_context.json" ]; then
+            echo "ERROR: enriched_context.json not found"
+            exit 1
+          fi
+          echo "enriched_context.json exists"
+
+      # -------------------------------------------------
+      # 9️⃣ Run AI Review Engine
       # -------------------------------------------------
       - name: Run AI Review
         env:
+          PYTHONPATH: ${{ github.workspace }}/ai-platform
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
-          PYTHONPATH: ${{ github.workspace }}/ai-platform
         run: |
           python ai-platform/ai/reasoning/review.py \
           ${{ github.workspace }}/enriched_context.json \
           ${{ github.workspace }}/ai_review.json
 
       # -------------------------------------------------
-      # 9️⃣ Post PR Comment
+      # 🔟 Post PR Comment
       # -------------------------------------------------
       - name: Post PR Comment
         env:
@@ -126,12 +137,3 @@ jobs:
         run: |
           python ai-platform/ai/reasoning/post_comment.py \
           ${{ github.workspace }}/ai_review.json
-
-      # -------------------------------------------------
-      # 🔎 (Optional) Debug artifacts — remove later
-      # -------------------------------------------------
-      - name: Debug generated files
-        if: always()
-        run: |
-          echo "=== Workspace files ==="
-          ls -la ${{ github.workspace }}
