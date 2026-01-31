@@ -72,7 +72,7 @@ def assess_risk(enriched_context: dict) -> dict:
     pattern_counts = Counter(all_patterns)
 
     # -------------------------------------------------
-    # 3. Base risk scoring (LOWER unknown_service impact)
+    # 3. Base risk scoring (LOW unknown_service impact)
     # -------------------------------------------------
     risk_score = 0.0
     reasons = []
@@ -84,8 +84,6 @@ def assess_risk(enriched_context: dict) -> dict:
             continue
 
         base = info["base_score"]
-
-        # Unknown service should NOT inflate risk heavily
         if pattern == "unknown_service":
             base = 0.2
 
@@ -95,14 +93,35 @@ def assess_risk(enriched_context: dict) -> dict:
         )
 
     # -------------------------------------------------
-    # 4. Risk reducers (GOOD engineering signals)
+    # 4. Detect create-only PR (KEY SIGNAL)
     # -------------------------------------------------
-    if summary.get("update", 0) == 0 and summary.get("delete", 0) == 0:
-        risk_score -= 2
-        praise.append("Create-only change (no destructive actions)")
+    is_create_only = (
+        summary.get("create", 0) > 0 and
+        summary.get("update", 0) == 0 and
+        summary.get("delete", 0) == 0
+    )
 
+    # -------------------------------------------------
+    # 5. Create-only shared infra downgrade (CRITICAL FIX)
+    # -------------------------------------------------
+    if is_create_only:
+        if "blast_radius" in pattern_counts:
+            risk_score -= 2
+            praise.append("Create-only shared infrastructure (safe pattern)")
+
+        if "network_boundary" in pattern_counts and "public_exposure" not in pattern_counts:
+            risk_score -= 2
+            praise.append("Private network creation without public exposure")
+
+        if "identity_boundary" in pattern_counts:
+            risk_score -= 1.5
+            praise.append("Identity controls added during initial provisioning")
+
+    # -------------------------------------------------
+    # 6. Additional risk reducers
+    # -------------------------------------------------
     if "public_exposure" not in pattern_counts:
-        risk_score -= 2
+        risk_score -= 1
         praise.append("No public exposure detected")
 
     if intent == "bootstrap":
@@ -114,14 +133,14 @@ def assess_risk(enriched_context: dict) -> dict:
         praise.append("Security hardening change detected")
 
     # -------------------------------------------------
-    # 5. Intent escalation (REAL destructive intent only)
+    # 7. Intent escalation (ONLY destructive intent)
     # -------------------------------------------------
     if intent == "risky_change" and summary.get("delete", 0) > 0:
         risk_score += 2
         reasons.append("Destructive infrastructure change detected")
 
     # -------------------------------------------------
-    # 6. Environment weighting
+    # 8. Environment weighting
     # -------------------------------------------------
     if env == "prod":
         risk_score *= 1.3
@@ -129,7 +148,7 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score *= 0.7
 
     # -------------------------------------------------
-    # 7. Security severity engine
+    # 9. Security severity engine
     # -------------------------------------------------
     security_findings = []
 
@@ -139,8 +158,6 @@ def assess_risk(enriched_context: dict) -> dict:
             continue
 
         severity = sec["severity"]
-
-        # Dev downgrade
         if env == "dev" and severity == "HIGH":
             severity = "MEDIUM"
 
@@ -154,12 +171,8 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score += 4
         reasons.append("Critical security exposure detected")
 
-    elif any(f["severity"] == "HIGH" for f in security_findings) and env == "prod":
-        risk_score += 2
-        reasons.append("High security exposure in production")
-
     # -------------------------------------------------
-    # 8. Policy evaluation (POLICY ≠ VIOLATION)
+    # 10. Context-aware policy evaluation (FIXED)
     # -------------------------------------------------
     raw_policy_hits = []
 
@@ -176,22 +189,11 @@ def assess_risk(enriched_context: dict) -> dict:
                     "description": policy["description"]
                 })
 
-    # Context-aware filtering (THIS FIXES YOUR ISSUE)
     policy_violations = []
 
     for v in raw_policy_hits:
-        # Create-only networking is allowed
-        if (
-            v["pattern"] == "network_boundary"
-            and summary.get("update", 0) == 0
-            and summary.get("delete", 0) == 0
-        ):
+        if is_create_only and v["pattern"] in ["network_boundary", "identity_boundary"]:
             continue
-
-        # Security tightening is allowed
-        if v["pattern"] == "identity_boundary" and intent == "security_hardening":
-            continue
-
         policy_violations.append(v)
 
     if policy_violations:
@@ -201,7 +203,7 @@ def assess_risk(enriched_context: dict) -> dict:
         )
 
     # -------------------------------------------------
-    # 9. Historical context (light influence)
+    # 11. Historical context (light weight)
     # -------------------------------------------------
     resource_types = [r["type"] for r in resources]
     history = find_similar_prs(resource_types, env)
@@ -209,17 +211,17 @@ def assess_risk(enriched_context: dict) -> dict:
     if history and risk_score >= 4:
         risk_score += 1
         reasons.append(
-            f"Historical context: {len(history)} similar risky change(s) observed"
+            f"Historical context: {len(history)} similar risky changes observed"
         )
 
     # -------------------------------------------------
-    # 10. Final risk & confidence
+    # 12. Final risk & confidence
     # -------------------------------------------------
     risk_level = score_to_level(risk_score)
     confidence = min(0.95, max(0.45, 0.55 + (risk_score / 12)))
 
     # -------------------------------------------------
-    # 11. PR Decision Engine (PASS / WARN / BLOCK)
+    # 13. Decision Engine
     # -------------------------------------------------
     decision = "PASS"
     decision_reason = "Safe infrastructure change"
@@ -232,16 +234,12 @@ def assess_risk(enriched_context: dict) -> dict:
         decision = "BLOCK"
         decision_reason = "High-risk change in production"
 
-    elif policy_violations:
+    elif policy_violations or risk_level == "MEDIUM":
         decision = "WARN"
-        decision_reason = "Policy violations detected"
-
-    elif risk_level == "MEDIUM":
-        decision = "WARN"
-        decision_reason = "Moderate infrastructure risk"
+        decision_reason = "Review recommended due to moderate risk"
 
     # -------------------------------------------------
-    # 12. Recommendations
+    # 14. Recommendations
     # -------------------------------------------------
     recommendations = []
 
@@ -261,7 +259,7 @@ def assess_risk(enriched_context: dict) -> dict:
         ])
 
     # -------------------------------------------------
-    # 13. Final review object
+    # 15. Final review object
     # -------------------------------------------------
     return {
         "environment": env,
@@ -289,7 +287,7 @@ def main(input_file: str, output_file: str):
 
     review = assess_risk(enriched_context)
 
-    # LLM explains, never decides
+    # LLM explanation (optional)
     review = enrich_with_llm(enriched_context, review)
 
     with open(output_file, "w") as f:
