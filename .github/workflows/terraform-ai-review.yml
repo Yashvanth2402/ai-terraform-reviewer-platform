@@ -19,7 +19,6 @@ on:
       AZURE_OPENAI_DEPLOYMENT:
         required: true
 
-# ✅ ADD THIS PERMISSIONS BLOCK (RIGHT HERE)
 permissions:
   contents: read
   pull-requests: write
@@ -27,8 +26,6 @@ permissions:
 jobs:
   ai-terraform-review:
     runs-on: ubuntu-latest
-
-    # ❌ REMOVE the permissions block from here
 
     steps:
       - name: Checkout caller repository
@@ -41,7 +38,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -r ${{ github.action_path }}/requirements.txt
+          pip install -r ./requirements.txt
 
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
@@ -60,7 +57,7 @@ jobs:
 
       - name: Enrich Terraform Context
         run: |
-          python ${{ github.action_path }}/ai/context/enrich.py \
+          python ./ai/context/enrich.py \
           ${{ inputs.terraform_path }}/tfplan.json \
           enriched_context.json
 
@@ -72,8 +69,8 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python ${{ github.action_path }}/ai/reasoning/review.py \
+          python ./ai/reasoning/review.py \
           enriched_context.json \
           ai_review.json
 
-          python ${{ github.action_path }}/ai/reasoning/post_comment.py
+          python ./ai/reasoning/post_comment.py
