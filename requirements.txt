@@ -2,3 +2,5 @@ openai
 requests
 python-dotenv
 PyGithub
+azure-identity
+PyYAML>=6.0
