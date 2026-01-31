@@ -1,0 +1,22 @@
+{
+  "network_policy": {
+    "description": "Controls changes to networking and routing components",
+    "patterns": ["network_boundary", "public_exposure"]
+  },
+  "data_policy": {
+    "description": "Controls data storage and persistence risks",
+    "patterns": ["data_at_rest"]
+  },
+  "identity_policy": {
+    "description": "Controls identity, RBAC, and authentication boundaries",
+    "patterns": ["identity_boundary"]
+  },
+  "platform_policy": {
+    "description": "Controls shared and blast-radius-heavy infrastructure",
+    "patterns": ["blast_radius"]
+  },
+  "security_baseline": {
+    "description": "Baseline security expectations for all environments",
+    "patterns": ["public_exposure", "identity_boundary"]
+  }
+}
