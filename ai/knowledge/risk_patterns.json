@@ -34,7 +34,7 @@
     },
     "unknown_service": {
       "description": "Service not yet classified by the platform",
-      "base_score": 1
+      "base_score": 0.2
     }
   }
 }
