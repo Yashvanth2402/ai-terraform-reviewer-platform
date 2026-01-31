@@ -1,11 +1,10 @@
 import json
 import os
-import sys
 from github import Github
 
 
 def main():
-    # ✅ Always resolve paths safely
+    # Resolve ai_review.json from workspace root
     base_dir = os.getcwd()
     review_path = os.path.join(base_dir, "ai_review.json")
 
@@ -17,14 +16,33 @@ def main():
 
     pr_number = os.environ.get("PR_NUMBER")
     github_token = os.environ.get("GITHUB_TOKEN")
+    repo_name = os.environ.get("GITHUB_REPOSITORY")
 
-    if not pr_number or not github_token:
-        raise ValueError("PR_NUMBER or GITHUB_TOKEN is missing")
+    if not pr_number or not github_token or not repo_name:
+        raise ValueError("PR_NUMBER, GITHUB_TOKEN, or GITHUB_REPOSITORY is missing")
 
     g = Github(github_token)
-    repo = g.get_repo(os.environ["GITHUB_REPOSITORY"])
+    repo = g.get_repo(repo_name)
     pr = repo.get_pull(int(pr_number))
 
+    # ----------------------------
+    # LLM SECTION (NEW)
+    # ----------------------------
+    llm_text = review.get("llm_explanation")
+    llm_section = ""
+
+    if llm_text and "unavailable" not in llm_text.lower():
+        llm_section = f"""
+---
+
+## 🧠 LLM Risk Explanation (AI)
+
+{llm_text}
+"""
+
+    # ----------------------------
+    # PR COMMENT BODY
+    # ----------------------------
     body = f"""
 ## 🤖 Terraform AI Review
 
@@ -40,10 +58,11 @@ def main():
 
 ### ✅ Recommendations
 {chr(10).join(f"- {rec}" for rec in review.get("recommendations", []))}
+{llm_section}
 """
 
     pr.create_issue_comment(body)
-    print("✅ AI review comment posted successfully")
+    print("✅ AI review comment (with LLM explanation) posted successfully")
 
 
 if __name__ == "__main__":
