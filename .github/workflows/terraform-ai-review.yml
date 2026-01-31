@@ -19,13 +19,16 @@ on:
       AZURE_OPENAI_DEPLOYMENT:
         required: true
 
+# ✅ ADD THIS PERMISSIONS BLOCK (RIGHT HERE)
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   ai-terraform-review:
     runs-on: ubuntu-latest
 
-    permissions:
-      pull-requests: write
-      contents: read
+    # ❌ REMOVE the permissions block from here
 
     steps:
       - name: Checkout caller repository
