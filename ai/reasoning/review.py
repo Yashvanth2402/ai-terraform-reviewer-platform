@@ -6,7 +6,8 @@ import yaml
 
 from ai.knowledge.knowledge_loader import (
     load_risk_patterns,
-    load_security_severity
+    load_security_severity,
+    load_blocking_rules
 )
 from ai.reasoning.intent_detector import detect_intent
 from ai.reasoning.llm_enrichment import enrich_with_llm
@@ -58,6 +59,7 @@ def assess_risk(enriched_context: dict) -> dict:
     risk_patterns = load_risk_patterns()
     security_severity_map = load_security_severity()
     policy_packs = load_policy_packs()
+    blocking_rules = load_blocking_rules()
 
     # -------------------------------------------------
     # 1. Detect intent
@@ -125,7 +127,7 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score *= 0.7
 
     # -------------------------------------------------
-    # 7. Security severity engine
+    # 7. Security Severity Engine
     # -------------------------------------------------
     security_findings = []
 
@@ -136,6 +138,7 @@ def assess_risk(enriched_context: dict) -> dict:
 
         severity = sec["severity"]
 
+        # Environment-aware downgrade
         if env == "dev" and severity == "HIGH":
             severity = "MEDIUM"
 
@@ -145,6 +148,7 @@ def assess_risk(enriched_context: dict) -> dict:
             "description": sec["description"]
         })
 
+    # Security-based escalation
     if any(f["severity"] == "CRITICAL" for f in security_findings):
         risk_score += 4
         reasons.append("Critical security exposure detected")
@@ -154,7 +158,7 @@ def assess_risk(enriched_context: dict) -> dict:
         reasons.append("High security exposure in production")
 
     # -------------------------------------------------
-    # 8. Policy pack enforcement (DAY 7)
+    # 8. Policy pack enforcement
     # -------------------------------------------------
     policy_violations = []
 
@@ -196,16 +200,38 @@ def assess_risk(enriched_context: dict) -> dict:
     confidence = min(0.95, max(0.45, 0.5 + (risk_score / 10)))
 
     # -------------------------------------------------
-    # 11. Recommendations
+    # 11. PR Decision Engine (DAY 8)
+    # -------------------------------------------------
+    decision = "PASS"
+    decision_reason = "No blocking conditions met"
+
+    if any(f["severity"] == "CRITICAL" for f in security_findings):
+        decision = "BLOCK"
+        decision_reason = "Critical security issue detected"
+
+    elif env == "prod" and risk_level == "HIGH":
+        decision = "BLOCK"
+        decision_reason = "High-risk infrastructure change in production"
+
+    elif policy_violations:
+        decision = "WARN"
+        decision_reason = "Policy violations detected"
+
+    elif risk_level == "MEDIUM":
+        decision = "WARN"
+        decision_reason = "Medium-risk infrastructure change"
+
+    # -------------------------------------------------
+    # 12. Recommendations
     # -------------------------------------------------
     recommendations = []
 
-    if risk_level == "LOW":
+    if decision == "PASS":
         recommendations.append("LGTM from an infrastructure safety perspective.")
 
-    elif risk_level == "MEDIUM":
+    elif decision == "WARN":
         recommendations.append(
-            "Validate this change in a lower environment before promotion."
+            "Review carefully and validate in a lower environment before merge."
         )
 
     else:
@@ -216,13 +242,15 @@ def assess_risk(enriched_context: dict) -> dict:
         ])
 
     # -------------------------------------------------
-    # 12. Final review object
+    # 13. Final review object
     # -------------------------------------------------
     return {
         "environment": env,
         "intent": intent,
         "risk_level": risk_level,
         "confidence": round(confidence, 2),
+        "decision": decision,
+        "decision_reason": decision_reason,
         "reasons": list(dict.fromkeys(reasons)),
         "praise": praise,
         "security_findings": security_findings,
@@ -248,7 +276,7 @@ def main(input_file: str, output_file: str):
     with open(output_file, "w") as f:
         json.dump(review, f, indent=2)
 
-    print("SUCCESS: Policy-aware AI Terraform review generated")
+    print("SUCCESS: Production-grade AI Terraform review generated")
     print(json.dumps(review, indent=2))
 
 
