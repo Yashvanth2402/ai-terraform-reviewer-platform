@@ -17,14 +17,14 @@ from ai.reasoning.llm_enrichment import enrich_with_llm
 # -------------------------------------------------
 
 def score_to_level(score: float) -> str:
-    if score >= 8:
+    if score >= 7:
         return "HIGH"
     if score >= 4:
         return "MEDIUM"
     return "LOW"
 
 
-def load_repo_policy_config():
+def load_repo_config():
     cfg = Path(".ai-reviewer.yaml")
     if not cfg.exists():
         return {"environment": "dev"}
@@ -37,14 +37,14 @@ def load_repo_policy_config():
 # -------------------------------------------------
 
 def assess_risk(enriched_context: dict) -> dict:
-    repo_cfg = load_repo_policy_config()
+    repo_cfg = load_repo_config()
     env = repo_cfg.get("environment", "dev")
 
     resources = enriched_context.get("resources", [])
     summary = enriched_context.get("summary", {})
 
-    patterns_def = load_risk_patterns()
-    security_map = load_security_severity()
+    risk_defs = load_risk_patterns()
+    security_defs = load_security_severity()
 
     # -------------------------------------------------
     # 1. Detect intent
@@ -54,35 +54,32 @@ def assess_risk(enriched_context: dict) -> dict:
     # -------------------------------------------------
     # 2. Collect patterns
     # -------------------------------------------------
-    patterns = []
+    all_patterns = []
     for r in resources:
-        patterns.extend(r.get("patterns", []))
+        all_patterns.extend(r.get("patterns", []))
 
-    pattern_counts = Counter(patterns)
+    pattern_counts = Counter(all_patterns)
 
     # -------------------------------------------------
-    # 3. Base risk scoring
+    # 3. Base risk score
     # -------------------------------------------------
     risk_score = 0.0
     reasons = []
     praise = []
 
-    for p, count in pattern_counts.items():
-        info = patterns_def.get(p)
+    for pattern, count in pattern_counts.items():
+        info = risk_defs.get(pattern)
         if not info:
             continue
 
         base = info["base_score"]
-        if p == "unknown_service":
+        if pattern == "unknown_service":
             base = 0.2
 
         risk_score += base * count
-        reasons.append(
-            f"{p} detected ({count}×): {info['description']}"
-        )
 
     # -------------------------------------------------
-    # 4. Detect create-only PR (KEY SIGNAL)
+    # 4. Detect create-only PR
     # -------------------------------------------------
     is_create_only = (
         summary.get("create", 0) > 0
@@ -91,42 +88,52 @@ def assess_risk(enriched_context: dict) -> dict:
     )
 
     # -------------------------------------------------
-    # 5. Apply SAFE CREATE-ONLY LOGIC (THE FIX)
+    # 5. CLASSIFY create-only type (KEY FIX)
     # -------------------------------------------------
-    if is_create_only:
-        praise.append("Create-only infrastructure change")
+    scaffold_only = is_create_only and not any(
+        p in pattern_counts
+        for p in ["compute_provisioning", "secret_material", "secret_exposure"]
+    )
 
-        if "public_exposure" not in pattern_counts:
-            praise.append("No public exposure detected")
+    active_create = is_create_only and not scaffold_only
 
-        if "network_boundary" in pattern_counts:
-            praise.append("Private network resources created")
+    # -------------------------------------------------
+    # 6. Scaffold infra (SAFE)
+    # -------------------------------------------------
+    if scaffold_only:
+        risk_score = min(risk_score, 2.5)
+        reasons = ["Create-only scaffold infrastructure without public exposure"]
+        praise.extend([
+            "Infrastructure scaffold only (no compute, no secrets)",
+            "No public exposure detected",
+            "Safe for development iteration"
+        ])
 
-        if "identity_boundary" in pattern_counts:
-            praise.append("Security controls added during provisioning")
-
-        # 🔥 HARD RISK CAP — THIS SOLVES YOUR PROBLEM
-        risk_score = min(risk_score, 3.0)
-
+    # -------------------------------------------------
+    # 7. Active create-only infra (NOT SAFE)
+    # -------------------------------------------------
+    if active_create:
+        risk_score = max(risk_score, 4.5)
         reasons = [
-            "Create-only infrastructure without public exposure"
+            "Create-only change includes active resources (compute or secrets)"
         ]
 
-    # -------------------------------------------------
-    # 6. Environment weighting
-    # -------------------------------------------------
-    if env == "prod" and not is_create_only:
-        risk_score *= 1.3
-    elif env == "dev":
-        risk_score *= 0.7
+        if "secret_material" in pattern_counts:
+            reasons.append("Secret material generated in Terraform")
+
+        if "secret_exposure" in pattern_counts:
+            reasons.append("Sensitive secret exposed via Terraform outputs or state")
+
+        if "compute_provisioning" in pattern_counts:
+            reasons.append("Compute resources provisioned requiring security hardening")
 
     # -------------------------------------------------
-    # 7. Security severity escalation
+    # 8. Security severity escalation
     # -------------------------------------------------
     security_findings = []
 
     for p in pattern_counts:
-        sec = security_map.get(p)
+        sec = security_defs.get(p)
         if not sec:
             continue
 
@@ -136,36 +143,51 @@ def assess_risk(enriched_context: dict) -> dict:
             "description": sec["description"]
         })
 
-    if any(f["severity"] == "CRITICAL" for f in security_findings):
-        risk_score = max(risk_score, 9)
-        reasons.append("Critical security exposure detected")
+        if sec["severity"] == "CRITICAL":
+            risk_score = max(risk_score, 8)
 
     # -------------------------------------------------
-    # 8. Final risk level & decision
+    # 9. Environment weighting
+    # -------------------------------------------------
+    if env == "prod":
+        risk_score *= 1.2
+    else:
+        risk_score *= 0.8
+
+    # -------------------------------------------------
+    # 10. Final risk & decision
     # -------------------------------------------------
     risk_level = score_to_level(risk_score)
 
-    if risk_level == "HIGH":
-        decision = "WARN"
-        decision_reason = "High-risk infrastructure change"
-    else:
+    if risk_level == "LOW":
         decision = "PASS"
         decision_reason = "Safe infrastructure change"
+        recommendations = ["LGTM from an infrastructure safety perspective."]
+        confidence = 0.6
 
-    confidence = 0.6 if decision == "PASS" else 0.9
-
-    # -------------------------------------------------
-    # 9. Recommendations
-    # -------------------------------------------------
-    if decision == "PASS":
+    elif risk_level == "MEDIUM":
+        decision = "WARN"
+        decision_reason = "Active infrastructure change requires review"
         recommendations = [
-            "LGTM from an infrastructure safety perspective."
+            "Avoid generating or storing secrets in Terraform.",
+            "Use Azure Key Vault or pre-generated credentials.",
+            "Ensure compute resources follow security hardening standards."
         ]
+        confidence = 0.75
+
     else:
+        decision = "BLOCK"
+        decision_reason = "High-risk infrastructure change"
         recommendations = [
-            "Review carefully and validate in a lower environment before merge."
+            "Do not merge until security risks are addressed.",
+            "Remove secret generation from Terraform.",
+            "Introduce explicit network and identity controls."
         ]
+        confidence = 0.9
 
+    # -------------------------------------------------
+    # 11. Final review object
+    # -------------------------------------------------
     return {
         "environment": env,
         "intent": intent,
