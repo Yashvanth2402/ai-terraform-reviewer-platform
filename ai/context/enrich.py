@@ -1,60 +1,72 @@
-print("DEBUG: enrich.py started")
-
 import json
 import sys
+from pathlib import Path
+
+from ai.knowledge.knowledge_loader import load_service_capabilities
 
 
-def infer_environment(plan_path: str) -> str:
-    if "prod" in plan_path.lower():
-        return "prod"
-    return "dev"
-
-
-def classify_resource(address: str) -> str:
-    if "shared" in address.lower():
-        return "shared-infra"
-    return "app-infra"
+def extract_action(change: dict) -> str:
+    """
+    Determine Terraform action: create / update / delete
+    """
+    actions = change.get("actions", [])
+    if "create" in actions:
+        return "create"
+    if "update" in actions:
+        return "update"
+    if "delete" in actions:
+        return "delete"
+    return "unknown"
 
 
 def enrich_plan(plan_file: str, output_file: str):
-    print(f"DEBUG: reading plan file {plan_file}")
-
     with open(plan_file, "r") as f:
         plan = json.load(f)
 
-    enriched = {
-        "environment": infer_environment(plan_file),
-        "summary": {
-            "create": 0,
-            "update": 0,
-            "delete": 0
-        },
-        "resources": []
-    }
+    service_capabilities = load_service_capabilities()
 
-    for rc in plan.get("resource_changes", []):
-        actions = rc.get("change", {}).get("actions", [])
+    resource_changes = plan.get("resource_changes", [])
 
-        for action in actions:
-            if action in enriched["summary"]:
-                enriched["summary"][action] += 1
+    enriched_resources = []
+    summary = {"create": 0, "update": 0, "delete": 0}
 
-        enriched["resources"].append({
-            "address": rc.get("address"),
-            "type": rc.get("type"),
-            "actions": actions,
-            "classification": classify_resource(rc.get("address", ""))
+    for rc in resource_changes:
+        resource_type = rc.get("type")
+        change = rc.get("change", {})
+        action = extract_action(change)
+
+        if action in summary:
+            summary[action] += 1
+
+        # 🔑 CORE CHANGE — PATTERN MAPPING
+        patterns = service_capabilities.get(
+            resource_type,
+            ["unknown_service"]
+        )
+
+        enriched_resources.append({
+            "type": resource_type,
+            "name": rc.get("name"),
+            "action": action,
+            "patterns": patterns
         })
 
-    with open(output_file, "w") as f:
-        json.dump(enriched, f, indent=2)
+    enriched_context = {
+        "environment": "dev",  # later comes from workflow input
+        "summary": summary,
+        "resources": enriched_resources
+    }
 
-    print(f"SUCCESS: Enriched context written to {output_file}")
+    with open(output_file, "w") as f:
+        json.dump(enriched_context, f, indent=2)
+
+    print("SUCCESS: Terraform plan enriched with risk patterns")
+    print(json.dumps(enriched_context, indent=2))
 
 
 if __name__ == "__main__":
     if len(sys.argv) != 3:
-        print("ERROR: Usage: python enrich.py <tfplan.json> <output.json>")
+        print("Usage: python enrich.py <tfplan.json> <enriched_context.json>")
         sys.exit(1)
 
     enrich_plan(sys.argv[1], sys.argv[2])
