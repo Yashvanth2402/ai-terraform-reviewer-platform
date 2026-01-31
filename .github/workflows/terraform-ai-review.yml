@@ -28,39 +28,46 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ✅ Checkout CALLER repo into workspace
       - name: Checkout caller repository
         uses: actions/checkout@v4
 
+      # ✅ Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
+      # ✅ FIXED: Install deps from repo root
       - name: Install dependencies
         run: |
-          pip install -r ./requirements.txt
+          python -m pip install --upgrade pip
+          pip install -r $GITHUB_WORKSPACE/requirements.txt
 
+      # ✅ Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
       - name: Terraform Init
-        working-directory: ${{ inputs.terraform_path }}
+        working-directory: ${{ github.workspace }}/${{ inputs.terraform_path }}
         run: terraform init -input=false
 
       - name: Terraform Plan
-        working-directory: ${{ inputs.terraform_path }}
+        working-directory: ${{ github.workspace }}/${{ inputs.terraform_path }}
         run: terraform plan -out=tfplan -input=false
 
       - name: Convert Plan to JSON
-        working-directory: ${{ inputs.terraform_path }}
+        working-directory: ${{ github.workspace }}/${{ inputs.terraform_path }}
         run: terraform show -json tfplan > tfplan.json
 
+      # ✅ Enrichment step
       - name: Enrich Terraform Context
         run: |
-          python ./ai/context/enrich.py \
-          ${{ inputs.terraform_path }}/tfplan.json \
+          python $GITHUB_WORKSPACE/ai/context/enrich.py \
+          $GITHUB_WORKSPACE/${{ inputs.terraform_path }}/tfplan.json \
           enriched_context.json
 
+      # ✅ AI Review
       - name: Run AI Review
         env:
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
@@ -69,8 +76,9 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          python ./ai/reasoning/review.py \
+          python $GITHUB_WORKSPACE/ai/reasoning/review.py \
           enriched_context.json \
           ai_review.json
 
-          python ./ai/reasoning/post_comment.py
+          python $GITHUB_WORKSPACE/ai/reasoning/post_comment.py \
+          ai_review.json
