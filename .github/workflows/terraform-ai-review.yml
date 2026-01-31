@@ -28,11 +28,15 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout CALLER repo
-      - name: Checkout caller repository
+      # -------------------------------------------------
+      # 1️⃣ Checkout CALLER (consumer) repo
+      # -------------------------------------------------
+      - name: Checkout consumer repository
         uses: actions/checkout@v4
 
+      # -------------------------------------------------
       # 2️⃣ Checkout PLATFORM repo
+      # -------------------------------------------------
       - name: Checkout AI platform repository
         uses: actions/checkout@v4
         with:
@@ -40,25 +44,33 @@ jobs:
           ref: main
           path: ai-platform
 
-      # 3️⃣ Python
+      # -------------------------------------------------
+      # 3️⃣ Setup Python
+      # -------------------------------------------------
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 4️⃣ Dependencies
-      - name: Install dependencies
+      # -------------------------------------------------
+      # 4️⃣ Install dependencies
+      # -------------------------------------------------
+      - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r ai-platform/requirements.txt
 
-      # 5️⃣ Azure Login
+      # -------------------------------------------------
+      # 5️⃣ Azure Login (consumer repo secret)
+      # -------------------------------------------------
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 6️⃣ Terraform
+      # -------------------------------------------------
+      # 6️⃣ Terraform setup & plan
+      # -------------------------------------------------
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
@@ -74,28 +86,63 @@ jobs:
         working-directory: ${{ github.workspace }}/${{ inputs.terraform_path }}
         run: terraform show -json tfplan > tfplan.json
 
-      # 7️⃣ Enrich context (FIXED)
+      # -------------------------------------------------
+      # 7️⃣ Enrich Terraform Context
+      # -------------------------------------------------
       - name: Enrich Terraform Context
         env:
           PYTHONPATH: ${{ github.workspace }}/ai-platform
         run: |
           python ai-platform/ai/context/enrich.py \
-          ${{ github.workspace }}/${{ inputs.terraform_path }}/tfplan.json \
-          enriched_context.json
+            ${{ github.workspace }}/${{ inputs.terraform_path }}/tfplan.json \
+            enriched_context.json
 
-      # 8️⃣ AI Review (FIXED)
+      # -------------------------------------------------
+      # 8️⃣ Run AI Review
+      # -------------------------------------------------
       - name: Run AI Review
         env:
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
           AZURE_OPENAI_ENDPOINT: ${{ secrets.AZURE_OPENAI_ENDPOINT }}
           AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           PYTHONPATH: ${{ github.workspace }}/ai-platform
         run: |
           python ai-platform/ai/reasoning/review.py \
-          enriched_context.json \
-          ai_review.json
+            enriched_context.json \
+            ai_review.json
 
-          python ai-platform/ai/reasoning/post_comment.py \
-          ai_review.json
+      # -------------------------------------------------
+      # 9️⃣ Post PR Comment
+      # -------------------------------------------------
+      - name: Post AI Review Comment
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          PYTHONPATH: ${{ github.workspace }}/ai-platform
+        run: |
+          python ai-platform/ai/reasoning/post_comment.py ai_review.json
+
+      # -------------------------------------------------
+      # 🔒 1️⃣0️⃣ ENFORCE AI DECISION (DAY 8 – CRITICAL)
+      # -------------------------------------------------
+      - name: Enforce AI Review Decision
+        run: |
+          echo "🔍 Enforcing AI decision..."
+
+          DECISION=$(jq -r '.decision' ai_review.json)
+          REASON=$(jq -r '.decision_reason' ai_review.json)
+
+          echo "AI Decision: $DECISION"
+          echo "Reason: $REASON"
+
+          if [ "$DECISION" = "BLOCK" ]; then
+            echo "::error::❌ PR BLOCKED by Terraform AI Reviewer — $REASON"
+            exit 1
+          fi
+
+          if [ "$DECISION" = "WARN" ]; then
+            echo "::warning::⚠️ PR requires attention — $REASON"
+          fi
+
+          echo "✅ AI Review enforcement completed"
