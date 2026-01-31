@@ -1,0 +1,40 @@
+{
+  "patterns": {
+    "public_exposure": {
+      "description": "Resource is exposed to the public internet",
+      "base_score": 4
+    },
+    "network_boundary": {
+      "description": "Changes to virtual network boundaries or routing",
+      "base_score": 2
+    },
+    "identity_boundary": {
+      "description": "Changes to authentication, authorization, or identity",
+      "base_score": 3
+    },
+    "data_at_rest": {
+      "description": "Data storage or persistence resources involved",
+      "base_score": 3
+    },
+    "blast_radius": {
+      "description": "Shared or hub infrastructure affecting multiple systems",
+      "base_score": 3
+    },
+    "destructive_change": {
+      "description": "Update or delete of existing resources",
+      "base_score": 5
+    },
+    "availability_risk": {
+      "description": "Single-instance or non-HA resource",
+      "base_score": 2
+    },
+    "cost_risk": {
+      "description": "Change that may significantly increase cost",
+      "base_score": 2
+    },
+    "unknown_service": {
+      "description": "Service not yet classified by the platform",
+      "base_score": 1
+    }
+  }
+}
