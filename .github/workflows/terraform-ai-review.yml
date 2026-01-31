@@ -16,7 +16,7 @@ on:
         required: true
       AZURE_OPENAI_DEPLOYMENT:
         required: true
-      AZURE_CREDENTIALS:        # ✅ REQUIRED FOR azure/login
+      AZURE_CREDENTIALS:
         required: true
 
 permissions:
@@ -28,11 +28,11 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # 1️⃣ Checkout CALLER repo (Terraform code)
+      # 1️⃣ Checkout CALLER repo
       - name: Checkout caller repository
         uses: actions/checkout@v4
 
-      # 2️⃣ Checkout PLATFORM repo (AI logic + requirements.txt)
+      # 2️⃣ Checkout PLATFORM repo
       - name: Checkout AI platform repository
         uses: actions/checkout@v4
         with:
@@ -40,25 +40,25 @@ jobs:
           ref: main
           path: ai-platform
 
-      # 3️⃣ Setup Python
+      # 3️⃣ Python
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      # 4️⃣ Install Python dependencies
+      # 4️⃣ Dependencies
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           pip install -r ai-platform/requirements.txt
 
-      # 5️⃣ Azure Login (SERVICE PRINCIPAL via AZURE_CREDENTIALS)
+      # 5️⃣ Azure Login
       - name: Azure Login
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
 
-      # 6️⃣ Setup Terraform
+      # 6️⃣ Terraform
       - name: Setup Terraform
         uses: hashicorp/setup-terraform@v3
 
@@ -74,14 +74,16 @@ jobs:
         working-directory: ${{ github.workspace }}/${{ inputs.terraform_path }}
         run: terraform show -json tfplan > tfplan.json
 
-      # 7️⃣ Enrich Terraform Context
+      # 7️⃣ Enrich context (FIXED)
       - name: Enrich Terraform Context
+        env:
+          PYTHONPATH: ${{ github.workspace }}/ai-platform
         run: |
           python ai-platform/ai/context/enrich.py \
           ${{ github.workspace }}/${{ inputs.terraform_path }}/tfplan.json \
           enriched_context.json
 
-      # 8️⃣ Run AI Review + Post PR Comment
+      # 8️⃣ AI Review (FIXED)
       - name: Run AI Review
         env:
           AZURE_OPENAI_KEY: ${{ secrets.AZURE_OPENAI_KEY }}
@@ -89,6 +91,7 @@ jobs:
           AZURE_OPENAI_DEPLOYMENT: ${{ secrets.AZURE_OPENAI_DEPLOYMENT }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PYTHONPATH: ${{ github.workspace }}/ai-platform
         run: |
           python ai-platform/ai/reasoning/review.py \
           enriched_context.json \
