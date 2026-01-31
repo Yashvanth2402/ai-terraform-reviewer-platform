@@ -1,0 +1,22 @@
+{
+  "block_conditions": {
+    "critical_security": {
+      "description": "Critical security exposure detected",
+      "decision": "BLOCK"
+    },
+    "high_risk_prod": {
+      "description": "High-risk change in production environment",
+      "decision": "BLOCK"
+    }
+  },
+  "warn_conditions": {
+    "policy_violation": {
+      "description": "Policy violation detected",
+      "decision": "WARN"
+    },
+    "medium_risk": {
+      "description": "Medium risk infrastructure change",
+      "decision": "WARN"
+    }
+  }
+}
