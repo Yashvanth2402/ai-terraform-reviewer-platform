@@ -115,9 +115,7 @@ def assess_risk(enriched_context: dict) -> dict:
     # 6. Active create infra (REAL-WORLD RULE)
     # -------------------------------------------------
     if active_create:
-        # 🔑 HARD FLOOR — cannot be LOW risk
         risk_score = max(risk_score, 4.0)
-
         reasons = [
             "Active infrastructure created requiring human review"
         ]
@@ -152,7 +150,7 @@ def assess_risk(enriched_context: dict) -> dict:
             risk_score = max(risk_score, 8)
 
     # -------------------------------------------------
-    # 8. Environment weighting (DEV ≠ PROD)
+    # 8. Environment weighting
     # -------------------------------------------------
     if env == "prod":
         risk_score *= 1.2
@@ -160,10 +158,20 @@ def assess_risk(enriched_context: dict) -> dict:
         risk_score *= 0.9
 
     # -------------------------------------------------
-    # 9. Final risk & decision
+    # 9. Risk level calculation
     # -------------------------------------------------
     risk_level = score_to_level(risk_score)
 
+    # -------------------------------------------------
+    # 🔒 FINAL RISK FLOOR (LAST FIX)
+    # -------------------------------------------------
+    # Active infrastructure must NEVER be LOW risk
+    if active_create and risk_level == "LOW":
+        risk_level = "MEDIUM"
+
+    # -------------------------------------------------
+    # 10. Final decision
+    # -------------------------------------------------
     if scaffold_only:
         decision = "PASS"
         decision_reason = "Safe scaffold infrastructure change"
@@ -200,7 +208,7 @@ def assess_risk(enriched_context: dict) -> dict:
         ]
 
     # -------------------------------------------------
-    # 10. Final review object
+    # 11. Final review object
     # -------------------------------------------------
     return {
         "environment": env,
@@ -225,6 +233,8 @@ def main(input_file: str, output_file: str):
         enriched = json.load(f)
 
     review = assess_risk(enriched)
+
+    # LLM explains only — never decides
     review = enrich_with_llm(enriched, review)
 
     with open(output_file, "w") as f:
