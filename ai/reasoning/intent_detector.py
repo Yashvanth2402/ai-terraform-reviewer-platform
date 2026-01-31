@@ -1,37 +1,49 @@
 def detect_intent(enriched_context: dict) -> str:
     """
-    Infer high-level intent of the PR based on change patterns.
-    This does NOT decide risk — only tone & expectations.
+    Detects the intent of a Terraform PR based on actions and patterns.
+
+    Possible intents:
+    - bootstrap
+    - security_hardening
+    - risky_change
+    - mixed_change
     """
 
     resources = enriched_context.get("resources", [])
     summary = enriched_context.get("summary", {})
 
-    actions = [r["action"] for r in resources]
-    patterns = set(p for r in resources for p in r.get("patterns", []))
+    creates = summary.get("create", 0)
+    updates = summary.get("update", 0)
+    deletes = summary.get("delete", 0)
 
-    # -------------------------------------------------
-    # Bootstrap: first-time infra creation
-    # -------------------------------------------------
-    if summary.get("create", 0) > 0 and summary.get("update", 0) == 0:
+    # -----------------------------------------
+    # 1️⃣ Bootstrap infrastructure
+    # -----------------------------------------
+    if creates > 0 and updates == 0 and deletes == 0:
         return "bootstrap"
 
-    # -------------------------------------------------
-    # Security hardening
-    # -------------------------------------------------
-    if "identity_boundary" in patterns and "public_exposure" not in patterns:
-        return "security_hardening"
-
-    # -------------------------------------------------
-    # Refactor / restructure
-    # -------------------------------------------------
-    if summary.get("update", 0) > 0 and summary.get("delete", 0) == 0:
-        return "refactor"
-
-    # -------------------------------------------------
-    # Risky / destructive change
-    # -------------------------------------------------
-    if summary.get("delete", 0) > 0:
+    # -----------------------------------------
+    # 2️⃣ Destructive / risky changes
+    # -----------------------------------------
+    if deletes > 0:
         return "risky_change"
 
-    return "unknown"
+    # -----------------------------------------
+    # 3️⃣ Security hardening
+    # -----------------------------------------
+    all_patterns = []
+    for r in resources:
+        all_patterns.extend(r.get("patterns", []))
+
+    if (
+        "identity_boundary" in all_patterns
+        and "public_exposure" not in all_patterns
+        and updates > 0
+        and deletes == 0
+    ):
+        return "security_hardening"
+
+    # -----------------------------------------
+    # 4️⃣ Mixed / unclear changes
+    # -----------------------------------------
+    return "mixed_change"
