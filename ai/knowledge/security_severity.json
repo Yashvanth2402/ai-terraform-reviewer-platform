@@ -1,0 +1,22 @@
+{
+  "public_exposure": {
+    "severity": "HIGH",
+    "description": "Resource exposed to public internet"
+  },
+  "identity_boundary": {
+    "severity": "MEDIUM",
+    "description": "Authentication or authorization boundary change"
+  },
+  "network_boundary": {
+    "severity": "MEDIUM",
+    "description": "Network boundary modification"
+  },
+  "data_at_rest": {
+    "severity": "HIGH",
+    "description": "Data storage or persistence resource involved"
+  },
+  "unknown_service": {
+    "severity": "LOW",
+    "description": "Service not classified yet"
+  }
+}
