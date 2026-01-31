@@ -5,7 +5,7 @@ from collections import Counter
 from ai.knowledge.knowledge_loader import load_risk_patterns
 from ai.reasoning.llm_enrichment import enrich_with_llm
 from ai.memory.memory_store import find_similar_prs
-
+from ai.reasoning.intent_detector import detect_intent
 
 # -------------------------------------------------
 # Helper functions
