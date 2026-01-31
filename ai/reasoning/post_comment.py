@@ -1,69 +1,72 @@
-import json
-import os
-from github import Github
+terraform {
+  required_providers {
+    azurerm = {
+      source  = "hashicorp/azurerm"
+      version = "~> 3.0"
+    }
+  }
+}
 
+provider "azurerm" {
+  features {}
+}
 
-def main():
-    # Resolve ai_review.json from workspace root
-    base_dir = os.getcwd()
-    review_path = os.path.join(base_dir, "ai_review.json")
+resource "azurerm_resource_group" "rg" {
+  name     = "rg-vm-dev"
+  location = var.location
+}
 
-    if not os.path.exists(review_path):
-        raise FileNotFoundError(f"ai_review.json not found at {review_path}")
+resource "azurerm_virtual_network" "vnet" {
+  name                = "vnet-dev"
+  address_space       = ["10.1.0.0/16"]
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
+}
 
-    with open(review_path, "r") as f:
-        review = json.load(f)
+resource "azurerm_subnet" "subnet" {
+  name                 = "vm-subnet"
+  resource_group_name  = azurerm_resource_group.rg.name
+  virtual_network_name = azurerm_virtual_network.vnet.name
+  address_prefixes     = ["10.1.1.0/24"]
+}
 
-    pr_number = os.environ.get("PR_NUMBER")
-    github_token = os.environ.get("GITHUB_TOKEN")
-    repo_name = os.environ.get("GITHUB_REPOSITORY")
+resource "azurerm_network_interface" "nic" {
+  name                = "vm-nic"
+  location            = azurerm_resource_group.rg.location
+  resource_group_name = azurerm_resource_group.rg.name
 
-    if not pr_number or not github_token or not repo_name:
-        raise ValueError("PR_NUMBER, GITHUB_TOKEN, or GITHUB_REPOSITORY is missing")
+  ip_configuration {
+    name                          = "internal"
+    subnet_id                     = azurerm_subnet.subnet.id
+    private_ip_address_allocation = "Dynamic"
+  }
+}
 
-    g = Github(github_token)
-    repo = g.get_repo(repo_name)
-    pr = repo.get_pull(int(pr_number))
+resource "azurerm_linux_virtual_machine" "vm" {
+  name                = "example-vm"
+  resource_group_name = azurerm_resource_group.rg.name
+  location            = azurerm_resource_group.rg.location
+  size                = var.vm_size
+  admin_username      = "azureuser"
 
-    # ----------------------------
-    # LLM SECTION (NEW)
-    # ----------------------------
-    llm_text = review.get("llm_explanation")
-    llm_section = ""
+  network_interface_ids = [
+    azurerm_network_interface.nic.id
+  ]
 
-    if llm_text and "unavailable" not in llm_text.lower():
-        llm_section = f"""
----
+  os_disk {
+    caching              = "ReadWrite"
+    storage_account_type = "Standard_LRS"
+  }
 
-## 🧠 LLM Risk Explanation (AI)
+  source_image_reference {
+    publisher = "Canonical"
+    offer     = "0001-com-ubuntu-server-focal"
+    sku       = "20_04-lts"
+    version   = "latest"
+  }
 
-{llm_text}
-"""
-
-    # ----------------------------
-    # PR COMMENT BODY
-    # ----------------------------
-    body = f"""
-## 🤖 Terraform AI Review
-
-**Environment:** {review.get("environment")}
-**Risk Level:** 🚨 **{review.get("risk_level")}**
-**Confidence:** {review.get("confidence")}
-
-### 🔍 Reasons
-{chr(10).join(f"- {r}" for r in review.get("reasons", []))}
-
-### 💬 Review Comments
-{chr(10).join(f"- {c}" for c in review.get("review_comments", []))}
-
-### ✅ Recommendations
-{chr(10).join(f"- {rec}" for rec in review.get("recommendations", []))}
-{llm_section}
-"""
-
-    pr.create_issue_comment(body)
-    print("✅ AI review comment (with LLM explanation) posted successfully")
-
-
-if __name__ == "__main__":
-    main()
+  admin_ssh_key {
+    username   = "azureuser"
+    public_key = var.ssh_public_key
+  }
+}
